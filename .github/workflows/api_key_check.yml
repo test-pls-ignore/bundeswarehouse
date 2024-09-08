@@ -25,4 +25,4 @@ jobs:
       - name: Run API key check script
         env:
           API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}  # API-Key aus GitHub Secret
-        run: python api_key_check.py
+        run: python source/api_key_check.py

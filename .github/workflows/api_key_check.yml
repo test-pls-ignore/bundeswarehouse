@@ -1,28 +1,43 @@
-name: API Key Check
+name: Auto-Update API Key
 
 on:
-  push:
-    branches:
-      - main  # Oder andere relevante Branches
   schedule:
-    - cron: '0 0 * * *'  # Täglich um Mitternacht ausführen
+    - cron: '0 4 * * *'  # Täglich um 04:00 Uhr morgens
+  workflow_dispatch:      # Ermöglicht manuellen Start zum Testen
 
 jobs:
-  check_api_key:
+  update_secret_job:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Code auschecken
         uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Python einrichten
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - name: Abhängigkeiten installieren
+        run: |
+          pip install requests beautifulsoup4
 
-      - name: Run API key check script
+      - name: Key scrapen und Secret updaten
         env:
-          API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}  # API-Key aus GitHub Secret
-        run: python source/api_key_check.py
+          # Hier nutzen wir den mächtigen Token für den Schreibzugriff
+          GH_TOKEN: ${{ secrets.SECRET_UPDATER_TOKEN }}
+        run: |
+          # 1. Python Skript ausführen und Ausgabe in Variable speichern
+          NEW_KEY=$(python source/fetch_api_key.py)
+          
+          if [ -z "$NEW_KEY" ]; then
+            echo "❌ Fehler: Kein Key gefunden!"
+            exit 1
+          fi
+
+          echo "✅ Key gefunden (Länge: ${#NEW_KEY} Zeichen)"
+          
+          # 2. Secret mit GitHub CLI (gh) aktualisieren
+          # Das Secret heißt hier 'BUNDESTAG_API_KEY'
+          echo "$NEW_KEY" | gh secret set BUNDESTAG_API_KEY
+          
+          echo "✅ GitHub Secret 'BUNDESTAG_API_KEY' erfolgreich aktualisiert."

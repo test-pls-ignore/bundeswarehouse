@@ -1,0 +1,40 @@
+name: Update Bundestag Data
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # Run daily at 4:00 AM UTC
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        
+    - name: Install dependencies
+      run: |
+        pip install requests sqlalchemy
+        
+    - name: Fetch API Key
+      run: python source/fetch_api_key.py > api_key.txt
+      # fetch_api_key.py prints to stdout, so we capture it. 
+      # Wait, check fetch_api_key.py again. It prints to stdout.
+      
+    - name: Ingest Data
+      run: python source/ingest.py
+      
+    - name: Commit and Push changes
+      run: |
+        git config --global user.name 'GitHub Action'
+        git config --global user.email 'action@github.com'
+        git add warehouse.db
+        git commit -m "Data update: $(date +'%Y-%m-%d')" || exit 0
+        git push

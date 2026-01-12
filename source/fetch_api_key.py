@@ -6,32 +6,43 @@ from bs4 import BeautifulSoup
 def get_key():
     url = "https://dip.bundestag.de/über-dip/hilfe/api"
     
-    # WICHTIG: Wir tarnen uns als normaler Browser (Chrome auf Windows)
+    # Tarnung als Browser
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     try:
-        # Fehlermeldung auf stderr schreiben, damit sie im GitHub Log erscheint
-        # print("Debug: Rufe URL ab...", file=sys.stderr) 
-        
         response = requests.get(url, headers=headers)
-        response.raise_for_status() # Wirft Fehler bei 403/404/500
+        response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
         text_content = soup.get_text()
         
-        # Regex Suche
-        match = re.search(r"API-Key lautet:\s*([A-Za-z0-9\._\-]+)", text_content)
-        
-        if match:
-            # Nur der Key darf auf stdout landen!
-            print(match.group(1).strip())
-            sys.exit(0)
+        # DEBUGGING: Wir suchen grob nach der Stelle und geben sie im Fehlerfall aus
+        start_index = text_content.find("API-Key")
+        if start_index != -1:
+            # Wir nehmen einen Ausschnitt von 200 Zeichen ab dem Wort "API-Key"
+            # um zu sehen, was da wirklich steht.
+            snippet = text_content[start_index:start_index+200]
+            # Wir schreiben das als Debug-Info auf stderr (damit es im GitHub Log rot auftaucht, aber nicht als Key gewertet wird)
+            print(f"DEBUG INFO - Gefundener Text-Schnipsel: {snippet!r}", file=sys.stderr)
+            
+            # Strategie: Wir suchen in diesem Schnipsel nach dem Key.
+            # Ein Key ist ein langes Wort (mind 20 Zeichen) aus Buchstaben, Zahlen, Punkten, Bindestrichen.
+            # Wir ignorieren, ob davor "lautet:" oder sonst was steht.
+            match = re.search(r"([A-Za-z0-9\._\-]{20,})", snippet)
+            
+            if match:
+                clean_key = match.group(1).strip()
+                # Sicherheitscheck: Ist das wirklich der Key oder nur ein langer Text?
+                # Der Key hat Punkte und ist kryptisch.
+                print(clean_key)
+                sys.exit(0)
+            else:
+                print("FEHLER: Kein Token im Schnipsel gefunden, das wie ein Key aussieht.", file=sys.stderr)
+                sys.exit(1)
         else:
-            print("FEHLER: Regex hat keinen Key im Text gefunden!", file=sys.stderr)
-            # Optional: Die ersten 500 Zeichen ausgeben zum Debuggen
-            # print(text_content[:500], file=sys.stderr)
+            print("FEHLER: Wort 'API-Key' gar nicht auf der Seite gefunden.", file=sys.stderr)
             sys.exit(1)
 
     except Exception as e:

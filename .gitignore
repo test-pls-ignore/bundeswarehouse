@@ -1,3 +1,6 @@
 bundeswarehouse-env/
 .python-version
 api_key.txt
+__pycache__/
+*.py[cod]
+*$py.class

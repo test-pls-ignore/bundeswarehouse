@@ -2,18 +2,27 @@
 
 import { useState } from 'react'
 import { searchBundestag } from './actions'
+import { isValidUrl } from '../lib/validation'
+import type { SearchResults } from '../lib/types'
 
 export default function Home() {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<any>(null)
+  const [results, setResults] = useState<SearchResults | null>(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
+    setError(null)
+    
     try {
       const data = await searchBundestag(query)
       setResults(data)
+    } catch (err) {
+      // Display user-friendly error message
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred')
+      setResults(null)
     } finally {
       setLoading(false)
     }
@@ -34,16 +43,25 @@ export default function Home() {
             placeholder="Search e.g. 'Klimaschutz'..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            maxLength={200}
+            aria-label="Search query"
           />
           <button
             type="submit"
             disabled={loading}
             className="absolute right-2 top-2 bottom-2 bg-blue-600 text-white px-6 rounded-full font-medium hover:bg-blue-700 transition disabled:opacity-50"
+            aria-label="Submit search"
           >
             {loading ? 'Searching...' : 'Search'}
           </button>
         </div>
       </form>
+
+      {error && (
+        <div className="w-full max-w-2xl mb-8 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+          {error}
+        </div>
+      )}
 
       {results && (
         <div className="w-full max-w-5xl space-y-12">
@@ -52,7 +70,7 @@ export default function Home() {
             <section>
               <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Vorgänge</h2>
               <div className="grid gap-4">
-                {results.vorgaenge.map((item: any) => (
+                {results.vorgaenge.map((item) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100">
                     <div className="text-sm text-blue-600 font-semibold mb-1">{item.typ}</div>
                     <h3 className="text-lg font-bold text-gray-900 mb-2">{item.titel}</h3>
@@ -70,15 +88,15 @@ export default function Home() {
             <section>
               <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Dokumente</h2>
               <div className="grid gap-4">
-                {results.dokumente.map((item: any) => (
+                {results.dokumente.map((item) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100 group">
                     <div className="flex justify-between items-start">
                       <div>
                         <div className="text-sm text-purple-600 font-semibold mb-1">{item.drucksachetyp} {item.nummer}</div>
                         <h3 className="text-lg font-bold text-gray-900 mb-2 group-hover:text-purple-700">{item.titel}</h3>
                       </div>
-                      {item.pdf_url && (
-                        <a href={item.pdf_url} target="_blank" rel="noreferrer" className="text-gray-400 hover:text-red-500">
+                      {item.pdf_url && isValidUrl(item.pdf_url, ['bundestag.de']) && (
+                        <a href={item.pdf_url} target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:text-red-500">
                           PDF ↗
                         </a>
                       )}
@@ -93,7 +111,7 @@ export default function Home() {
             <section>
               <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Aktivitäten</h2>
               <div className="grid gap-4">
-                {results.aktivitaeten.map((item: any) => (
+                {results.aktivitaeten.map((item) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100">
                     <div className="text-sm text-green-600 font-semibold mb-1">{item.art}</div>
                     <h3 className="text-lg font-bold text-gray-900 mb-2">{item.titel}</h3>

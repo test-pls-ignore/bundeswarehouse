@@ -3,18 +3,29 @@ import requests
 import sys
 
 def get_key_from_yaml():
-    # Wir nutzen die technische Definitionsdatei statt der Webseite
+    """
+    Fetch API key from the Bundestag OpenAPI YAML definition.
+    
+    Returns:
+        None: Prints the key to stdout on success
+        
+    Exits:
+        0: Success
+        1: Error occurred
+    """
+    # Use the technical definition file instead of the website
     url = "https://search.dip.bundestag.de/api/v1/openapi.yaml"
     
     try:
-        response = requests.get(url)
+        # Enable SSL verification and set timeout to prevent hanging
+        response = requests.get(url, timeout=10, verify=True)
         response.raise_for_status()
         
         content = response.text
         
-        # Wir suchen nach dem Muster aus der YAML Datei:
-        # description: "Beispiel: *ApiKey OSOegLs...*"
-        # Der Regex sucht nach "ApiKey" gefolgt von einem Leerzeichen und fängt dann den Key
+        # Search for the pattern in the YAML file:
+        # description: "Example: *ApiKey OSOegLs...*"
+        # The regex looks for "ApiKey" followed by a space and captures the key
         match = re.search(r"ApiKey\s+([A-Za-z0-9\._\-]+)", content)
         
         if match:
@@ -22,11 +33,14 @@ def get_key_from_yaml():
             print(clean_key)
             sys.exit(0)
         else:
-            print("FEHLER: Kein Key in der YAML-Datei gefunden.", file=sys.stderr)
+            print("ERROR: No key found in YAML file.", file=sys.stderr)
             sys.exit(1)
 
+    except requests.exceptions.RequestException as e:
+        print(f"CRITICAL ERROR: Failed to fetch API key: {e}", file=sys.stderr)
+        sys.exit(1)
     except Exception as e:
-        print(f"KRITISCHER FEHLER: {e}", file=sys.stderr)
+        print(f"CRITICAL ERROR: Unexpected error: {e}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":

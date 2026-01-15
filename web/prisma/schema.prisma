@@ -23,6 +23,7 @@ model Vorgang {
   dokumente       Dokument[]
   aktivitaeten    Aktivitaet[]
 
+  @@index([titel])
   @@map("vorgaenge")
 }
 
@@ -41,6 +42,8 @@ model Dokument {
 
   vorgang         Vorgang? @relation(fields: [vorgang_id], references: [id])
 
+  @@index([titel])
+  @@index([vorgang_id])
   @@map("dokumente")
 }
 
@@ -56,5 +59,7 @@ model Aktivitaet {
 
   vorgang         Vorgang? @relation(fields: [vorgang_id], references: [id])
 
+  @@index([titel])
+  @@index([vorgang_id])
   @@map("aktivitaeten")
 }

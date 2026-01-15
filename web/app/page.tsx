@@ -1,11 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { searchBundestag } from './actions'
+import { searchBundestag, type SearchResults } from './actions'
 
 export default function Home() {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<any>(null)
+  const [results, setResults] = useState<SearchResults | null>(null)
   const [loading, setLoading] = useState(false)
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -52,7 +52,7 @@ export default function Home() {
             <section>
               <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Vorgänge</h2>
               <div className="grid gap-4">
-                {results.vorgaenge.map((item: any) => (
+                {results.vorgaenge.map((item) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100">
                     <div className="text-sm text-blue-600 font-semibold mb-1">{item.typ}</div>
                     <h3 className="text-lg font-bold text-gray-900 mb-2">{item.titel}</h3>
@@ -70,7 +70,7 @@ export default function Home() {
             <section>
               <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Dokumente</h2>
               <div className="grid gap-4">
-                {results.dokumente.map((item: any) => (
+                {results.dokumente.map((item) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100 group">
                     <div className="flex justify-between items-start">
                       <div>
@@ -93,7 +93,7 @@ export default function Home() {
             <section>
               <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2">Aktivitäten</h2>
               <div className="grid gap-4">
-                {results.aktivitaeten.map((item: any) => (
+                {results.aktivitaeten.map((item) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100">
                     <div className="text-sm text-green-600 font-semibold mb-1">{item.art}</div>
                     <h3 className="text-lg font-bold text-gray-900 mb-2">{item.titel}</h3>

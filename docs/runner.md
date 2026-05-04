@@ -26,7 +26,7 @@ Make sure you add **both** labels when registering the runner (step 4 below).
 
 - The VPS must have outbound internet access (to reach GitHub and the Bundestag API).
 - Docker and Docker Compose must already be installed (needed for MinIO).
-- Python 3.12 or later must be available on the runner host (or managed via `actions/setup-python`).
+- Python 3.13 or later must be available on the runner host (or managed via `actions/setup-python`).
 
 ---
 

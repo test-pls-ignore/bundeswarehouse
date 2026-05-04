@@ -15,25 +15,38 @@ def load_api_key():
         print("Error: api_key.txt not found.")
         sys.exit(1)
 
-def fetch_resource(resource_name, api_key, limit=10):
+def fetch_resource(resource_name, api_key, limit=100):
     headers = {"Authorization": f"ApiKey {api_key}"}
     url = f"{API_BASE}/{resource_name}"
-    params = {
-        "format": "json",
-        "limit": limit
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code != 200:
-            print(f"Error fetching {resource_name}: {response.status_code} - {response.text}")
-            return []
-        
-        data = response.json()
-        return data.get("documents", [])
-    except Exception as e:
-        print(f"Exception fetching {resource_name}: {e}")
-        return []
+    all_documents = []
+    cursor = None
+
+    while True:
+        params = {
+            "format": "json",
+            "limit": limit
+        }
+        if cursor:
+            params["cursor"] = cursor
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code != 200:
+                print(f"Error fetching {resource_name}: {response.status_code} - {response.text}")
+                break
+
+            data = response.json()
+            documents = data.get("documents", [])
+            all_documents.extend(documents)
+
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+        except Exception as e:
+            print(f"Exception fetching {resource_name}: {e}")
+            break
+
+    return all_documents
 
 def ingest_data():
     api_key = load_api_key()

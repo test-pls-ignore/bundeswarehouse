@@ -43,6 +43,7 @@ Make sure you add **both** labels when registering the runner (step 4 below).
 mkdir -p ~/actions-runner && cd ~/actions-runner
 curl -o actions-runner-linux-x64.tar.gz -L \
   https://github.com/actions/runner/releases/download/v2.317.0/actions-runner-linux-x64-2.317.0.tar.gz
+# Note: replace v2.317.0 with the latest runner version shown on the GitHub setup page
 tar xzf actions-runner-linux-x64.tar.gz
 ./config.sh --url https://github.com/test-pls-ignore/bundeswarehouse \
             --token YOUR_TOKEN \

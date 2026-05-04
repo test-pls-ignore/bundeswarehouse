@@ -8,6 +8,8 @@ on:
 jobs:
   incremental-ingest:
     runs-on: [self-hosted, vps]
+    permissions:
+      contents: write
 
     env:
       S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}

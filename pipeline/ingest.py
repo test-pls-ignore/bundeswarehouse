@@ -158,7 +158,7 @@ def fetch_page(
 
     for attempt in range(max_retries + 1):
         if attempt > 0:
-            backoff = min(retry_backoff_max, (2 ** attempt) + random.uniform(0, 1))
+            backoff = min(retry_backoff_max, (2 ** min(attempt, 10)) + random.uniform(0, 1))
             logger.warning(
                 "Retry %d/%d for %s after %.1fs backoff.",
                 attempt,
@@ -319,6 +319,7 @@ def ingest_resource(
             # Only reached on a valid JSON response that contains no documents,
             # which is the correct end-of-pagination signal.
             logger.info("No documents returned for '%s', stopping.", resource)
+            # Clear any saved cursor so the next run starts fresh.
             state = clear_cursor(state, resource)
             break
 

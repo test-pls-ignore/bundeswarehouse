@@ -200,8 +200,7 @@ class TestFetchPage(unittest.TestCase):
     """Unit tests for pipeline.ingest.fetch_page."""
 
     def setUp(self):
-        import requests
-        self.session = requests.Session()
+        pass
 
     def _make_session_mock(self, responses):
         """Return a mock session whose .get() yields each response in sequence."""

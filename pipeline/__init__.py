@@ -1,0 +1,3 @@
+"""
+bundeswarehouse pipeline package
+"""

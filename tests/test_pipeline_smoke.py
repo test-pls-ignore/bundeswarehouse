@@ -174,5 +174,253 @@ class TestManifest(unittest.TestCase):
         self.assertEqual(manifest["objects"], [])
 
 
+def _make_mock_response(
+    status_code: int = 200,
+    content_type: str = "application/json",
+    url: str = "https://search.dip.bundestag.de/api/v1/vorgang",
+    body: bytes = b'{"documents": [], "cursor": null}',
+) -> MagicMock:
+    """Helper to create a mock requests.Response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.url = url
+    resp.headers = {"Content-Type": content_type}
+    resp.text = body.decode("utf-8", errors="replace")
+    # Set up .json() to parse correctly for JSON bodies, raise for non-JSON.
+    try:
+        parsed = json.loads(body)
+        resp.json.return_value = parsed
+    except json.JSONDecodeError as exc:
+        resp.json.side_effect = exc
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+class TestFetchPage(unittest.TestCase):
+    """Unit tests for pipeline.ingest.fetch_page."""
+
+    def setUp(self):
+        import requests
+        self.session = requests.Session()
+
+    def _make_session_mock(self, responses):
+        """Return a mock session whose .get() yields each response in sequence."""
+        session = MagicMock()
+        session.get.side_effect = responses
+        return session
+
+    # ------------------------------------------------------------------ #
+    # Challenge-page detection                                             #
+    # ------------------------------------------------------------------ #
+
+    def test_challenge_url_raises_challenge_page_error(self):
+        """A redirect to /.enodia/challenge must raise ChallengePageError."""
+        from pipeline.ingest import ChallengePageError, fetch_page
+
+        challenge_url = (
+            "https://search.dip.bundestag.de/.enodia/challenge"
+            "?redirect=%2Fapi%2Fv1%2Fvorgang%3Fformat%3Djson"
+        )
+        resp = _make_mock_response(
+            status_code=400,
+            content_type="text/html; charset=utf-8",
+            url=challenge_url,
+            body=b"<html><body>Please complete the challenge</body></html>",
+        )
+        resp.raise_for_status.side_effect = None  # don't raise before we check URL
+        session = self._make_session_mock([resp])
+
+        with self.assertRaises(ChallengePageError) as ctx:
+            fetch_page(session, "vorgang", "testapikey", max_retries=0)
+
+        err = ctx.exception
+        self.assertIn("/.enodia/challenge", err.final_url)
+        self.assertEqual(err.status_code, 400)
+
+    def test_html_content_type_raises_challenge_page_error(self):
+        """A response with Content-Type text/html must raise ChallengePageError."""
+        from pipeline.ingest import ChallengePageError, fetch_page
+
+        resp = _make_mock_response(
+            status_code=200,
+            content_type="text/html; charset=utf-8",
+            url="https://search.dip.bundestag.de/api/v1/vorgang",
+            body=b"<html><head><title>Challenge</title></head><body>...</body></html>",
+        )
+        session = self._make_session_mock([resp])
+
+        with self.assertRaises(ChallengePageError) as ctx:
+            fetch_page(session, "vorgang", "testapikey", max_retries=0)
+
+        self.assertIn("text/html", ctx.exception.content_type)
+
+    def test_challenge_error_attributes(self):
+        """ChallengePageError should carry url, final_url, status_code, content_type, body_snippet."""
+        from pipeline.ingest import ChallengePageError, fetch_page
+
+        challenge_url = "https://search.dip.bundestag.de/.enodia/challenge?redirect=%2Fapi%2Fv1%2Fvorgang"
+        body = b"<html>challenge</html>"
+        resp = _make_mock_response(
+            status_code=400,
+            content_type="text/html",
+            url=challenge_url,
+            body=body,
+        )
+        session = self._make_session_mock([resp])
+
+        with self.assertRaises(ChallengePageError) as ctx:
+            fetch_page(session, "vorgang", "testapikey", max_retries=0)
+
+        err = ctx.exception
+        self.assertEqual(err.status_code, 400)
+        self.assertIn("/.enodia/challenge", err.final_url)
+        self.assertIn("text/html", err.content_type)
+        self.assertIn("challenge", err.body_snippet)
+
+    # ------------------------------------------------------------------ #
+    # Non-JSON response                                                    #
+    # ------------------------------------------------------------------ #
+
+    def test_non_json_content_type_raises_value_error(self):
+        """A 200 response with a non-JSON content type must raise ValueError."""
+        from pipeline.ingest import fetch_page
+
+        resp = _make_mock_response(
+            status_code=200,
+            content_type="text/plain; charset=utf-8",
+            url="https://search.dip.bundestag.de/api/v1/vorgang",
+            body=b"This is not JSON",
+        )
+        session = self._make_session_mock([resp])
+
+        with self.assertRaises(ValueError) as ctx:
+            fetch_page(session, "vorgang", "testapikey", max_retries=0)
+
+        self.assertIn("text/plain", str(ctx.exception))
+
+    # ------------------------------------------------------------------ #
+    # Successful end-of-pagination                                         #
+    # ------------------------------------------------------------------ #
+
+    def test_valid_empty_documents_returns_empty_list(self):
+        """A valid JSON response with no documents signals end of pagination."""
+        from pipeline.ingest import fetch_page
+
+        resp = _make_mock_response(
+            status_code=200,
+            content_type="application/json",
+            url="https://search.dip.bundestag.de/api/v1/vorgang",
+            body=b'{"documents": [], "cursor": null}',
+        )
+        session = self._make_session_mock([resp])
+
+        docs, next_cursor = fetch_page(session, "vorgang", "testapikey", max_retries=0)
+
+        self.assertEqual(docs, [])
+        self.assertIsNone(next_cursor)
+
+    def test_valid_response_returns_documents_and_cursor(self):
+        """A valid JSON response returns documents and the next cursor."""
+        from pipeline.ingest import fetch_page
+
+        body = json.dumps(
+            {"documents": [{"id": "1"}, {"id": "2"}], "cursor": "next-cursor-xyz"}
+        ).encode()
+        resp = _make_mock_response(
+            status_code=200,
+            content_type="application/json",
+            url="https://search.dip.bundestag.de/api/v1/vorgang",
+            body=body,
+        )
+        session = self._make_session_mock([resp])
+
+        docs, next_cursor = fetch_page(session, "vorgang", "testapikey", max_retries=0)
+
+        self.assertEqual(len(docs), 2)
+        self.assertEqual(next_cursor, "next-cursor-xyz")
+
+    # ------------------------------------------------------------------ #
+    # Retry behaviour                                                      #
+    # ------------------------------------------------------------------ #
+
+    def test_retries_on_429_then_succeeds(self):
+        """A 429 response should be retried; success on the second attempt is returned."""
+        from pipeline.ingest import fetch_page
+
+        body = json.dumps({"documents": [{"id": "1"}], "cursor": None}).encode()
+
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.url = "https://search.dip.bundestag.de/api/v1/vorgang"
+        rate_limited.headers = {"Content-Type": "application/json"}
+        rate_limited.text = ""
+
+        success = _make_mock_response(
+            status_code=200,
+            content_type="application/json",
+            url="https://search.dip.bundestag.de/api/v1/vorgang",
+            body=body,
+        )
+        session = self._make_session_mock([rate_limited, success])
+
+        with patch("pipeline.ingest.time.sleep"):
+            docs, cursor = fetch_page(session, "vorgang", "testapikey", max_retries=1)
+
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(session.get.call_count, 2)
+
+    def test_raises_after_all_retries_exhausted(self):
+        """After max_retries 429s, fetch_page must raise (not return empty list)."""
+        import requests as req_lib
+        from pipeline.ingest import fetch_page
+
+        rate_limited = MagicMock()
+        rate_limited.status_code = 429
+        rate_limited.url = "https://search.dip.bundestag.de/api/v1/vorgang"
+        rate_limited.headers = {"Content-Type": "application/json"}
+        rate_limited.text = ""
+        # build a proper HTTPError so the raise works
+        rate_limited_exc = req_lib.HTTPError(response=rate_limited)
+
+        session = self._make_session_mock([rate_limited, rate_limited, rate_limited])
+
+        with patch("pipeline.ingest.time.sleep"):
+            with self.assertRaises(req_lib.HTTPError):
+                fetch_page(session, "vorgang", "testapikey", max_retries=2)
+
+
+class TestIngestResourceChallengeHandling(unittest.TestCase):
+    """Integration-level tests ensuring ingest_resource propagates ChallengePageError."""
+
+    def test_ingest_resource_raises_on_challenge(self):
+        """ingest_resource must re-raise ChallengePageError without writing any data."""
+        from pipeline.ingest import ChallengePageError, ingest_resource
+
+        challenge_url = "https://search.dip.bundestag.de/.enodia/challenge?redirect=%2F"
+        resp = _make_mock_response(
+            status_code=400,
+            content_type="text/html",
+            url=challenge_url,
+            body=b"<html>challenge</html>",
+        )
+
+        mock_client = MagicMock()
+        state = {"cursors": {}, "last_seen_update": None, "run_count": 1}
+        manifest = {"objects": []}
+
+        with patch("pipeline.ingest._make_session") as mock_make_session, \
+             patch("pipeline.ingest.time.sleep"):
+            mock_session = MagicMock()
+            mock_session.get.return_value = resp
+            mock_make_session.return_value = mock_session
+
+            with self.assertRaises(ChallengePageError):
+                ingest_resource("vorgang", "testapikey", mock_client, "bucket", state, manifest)
+
+        # No S3 uploads should have occurred
+        mock_client.put_object.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
+

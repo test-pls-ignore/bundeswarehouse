@@ -15,7 +15,7 @@ import argparse
 import logging
 import sys
 
-from pipeline.ingest import run_full_load, run_incremental
+from pipeline.ingest import ChallengePageError, run_full_load, run_incremental
 from pipeline.manifest import load_manifest, save_manifest
 from pipeline.state import load_state, mark_run_start, save_state
 from pipeline.storage import check_connection, ensure_bucket_exists, get_bucket_name, get_s3_client
@@ -52,7 +52,11 @@ def cmd_full_load(_args) -> int:
     state = mark_run_start(state)
     logger.info("Starting full load (run #%d).", state["run_count"])
 
-    state, manifest = run_full_load(client, bucket, state, manifest)
+    try:
+        state, manifest = run_full_load(client, bucket, state, manifest)
+    except ChallengePageError as exc:
+        logger.error("Full load aborted – WAF challenge page blocked the request: %s", exc)
+        return 1
 
     save_state(state, client, bucket)
     save_manifest(manifest, client, bucket)
@@ -76,7 +80,11 @@ def cmd_incremental_update(_args) -> int:
         state.get("last_seen_update"),
     )
 
-    state, manifest = run_incremental(client, bucket, state, manifest)
+    try:
+        state, manifest = run_incremental(client, bucket, state, manifest)
+    except ChallengePageError as exc:
+        logger.error("Incremental update aborted – WAF challenge page blocked the request: %s", exc)
+        return 1
 
     save_state(state, client, bucket)
     save_manifest(manifest, client, bucket)

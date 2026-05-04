@@ -1,6 +1,8 @@
 {
-  "last_run_at": null,
-  "last_seen_update": null,
-  "cursors": {},
-  "run_count": 0
+  "last_run_at": "2026-05-04T15:06:30.911680+00:00",
+  "last_seen_update": "2026-05-04T17:00:17+02:00",
+  "cursors": {
+    "vorgang": "AoJwuNPv-_cCLlZvcmdhbmctMjc0NjEw"
+  },
+  "run_count": 1
 }

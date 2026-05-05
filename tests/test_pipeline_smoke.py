@@ -123,6 +123,33 @@ class TestStateManagement(unittest.TestCase):
         updated = update_last_seen(state, "2024-01-15")
         self.assertEqual(updated["last_seen_update"], "2024-01-15")
 
+    def test_set_full_load_run(self):
+        from pipeline.state import set_full_load_run
+        state = {"cursors": {}, "full_load_completed_resources": []}
+        updated = set_full_load_run(state, "run-abc")
+        self.assertEqual(updated["full_load_run_id"], "run-abc")
+        self.assertEqual(updated["full_load_completed_resources"], [])
+
+    def test_mark_full_load_resource_done(self):
+        from pipeline.state import mark_full_load_resource_done
+        state = {"full_load_completed_resources": ["vorgang"]}
+        updated = mark_full_load_resource_done(state, "drucksache")
+        self.assertIn("vorgang", updated["full_load_completed_resources"])
+        self.assertIn("drucksache", updated["full_load_completed_resources"])
+
+    def test_mark_full_load_resource_done_idempotent(self):
+        from pipeline.state import mark_full_load_resource_done
+        state = {"full_load_completed_resources": ["vorgang"]}
+        updated = mark_full_load_resource_done(state, "vorgang")
+        self.assertEqual(updated["full_load_completed_resources"].count("vorgang"), 1)
+
+    def test_clear_full_load(self):
+        from pipeline.state import clear_full_load
+        state = {"full_load_run_id": "run-abc", "full_load_completed_resources": ["vorgang"]}
+        updated = clear_full_load(state)
+        self.assertIsNone(updated["full_load_run_id"])
+        self.assertEqual(updated["full_load_completed_resources"], [])
+
     def test_save_and_load_state_local(self):
         import tempfile
         import os
@@ -775,6 +802,175 @@ class TestCleanupCLI(unittest.TestCase):
             result = cmd_cleanup_current(args)
 
         self.assertEqual(result, 0)
+
+
+class TestIngestResourceCheckpoint(unittest.TestCase):
+    """Tests that ingest_resource calls checkpoint_fn at the right cadence."""
+
+    def _make_page_responses(self, n_pages):
+        """Return a list of session.get mock side-effects: n_pages with docs, then empty."""
+        responses = []
+        for i in range(n_pages):
+            cursor = f"cursor-{i + 1}" if i < n_pages - 1 else None
+            body = json.dumps({"documents": [{"id": str(i)}], "cursor": cursor}).encode()
+            responses.append(_make_mock_response(body=body))
+        # Final empty page
+        responses.append(_make_mock_response(body=b'{"documents": [], "cursor": null}'))
+        return responses
+
+    def test_checkpoint_fn_called_at_interval(self):
+        """checkpoint_fn should be called every CHECKPOINT_INTERVAL batches."""
+        from pipeline.ingest import CHECKPOINT_INTERVAL, ingest_resource
+
+        n_pages = CHECKPOINT_INTERVAL * 2  # trigger checkpoint exactly twice
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value.paginate.return_value = iter([{}])
+
+        state = {"cursors": {}, "last_seen_update": None, "run_count": 1}
+        manifest = {"objects": []}
+        checkpoint_calls = []
+
+        def _cp(s, m):
+            checkpoint_calls.append((s, m))
+
+        with patch("pipeline.ingest._make_session") as mock_make_session, \
+             patch("pipeline.ingest.time.sleep"):
+            mock_session = MagicMock()
+            mock_session.get.side_effect = self._make_page_responses(n_pages)
+            mock_make_session.return_value = mock_session
+
+            ingest_resource(
+                "vorgang", "testapikey", mock_client, "bucket", state, manifest,
+                checkpoint_fn=_cp,
+            )
+
+        self.assertEqual(len(checkpoint_calls), 2)
+
+    def test_no_checkpoint_fn_does_not_raise(self):
+        """ingest_resource must work normally when no checkpoint_fn is provided."""
+        from pipeline.ingest import ingest_resource
+
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value.paginate.return_value = iter([{}])
+        state = {"cursors": {}, "last_seen_update": None, "run_count": 1}
+        manifest = {"objects": []}
+
+        with patch("pipeline.ingest._make_session") as mock_make_session, \
+             patch("pipeline.ingest.time.sleep"):
+            mock_session = MagicMock()
+            mock_session.get.return_value = _make_mock_response(
+                body=b'{"documents": [], "cursor": null}'
+            )
+            mock_make_session.return_value = mock_session
+
+            # Should not raise
+            ingest_resource("vorgang", "testapikey", mock_client, "bucket", state, manifest)
+
+
+class TestRunFullLoadResume(unittest.TestCase):
+    """Tests for run_full_load resume behaviour."""
+
+    def _make_empty_s3_client(self):
+        mock_client = MagicMock()
+        paginator = MagicMock()
+        mock_client.get_paginator.return_value = paginator
+        paginator.paginate.return_value = iter([{}])
+        return mock_client
+
+    def test_run_full_load_skips_completed_resources(self):
+        """run_full_load must skip resources listed in full_load_completed_resources."""
+        from pipeline.ingest import RESOURCES, run_full_load
+
+        state = {
+            "cursors": {},
+            "last_seen_update": None,
+            "run_count": 1,
+            "full_load_run_id": "run-resume",
+            "full_load_completed_resources": RESOURCES[:2],  # first two already done
+        }
+        manifest = {"objects": []}
+        mock_client = self._make_empty_s3_client()
+
+        ingested = []
+
+        def _fake_ingest(resource, api_key, client, bucket, s, m,
+                         incremental=False, s3_prefix=None, checkpoint_fn=None):
+            ingested.append(resource)
+            return s, m
+
+        with patch("pipeline.ingest.ingest_resource", side_effect=_fake_ingest), \
+             patch("pipeline.ingest.load_api_key", return_value="key"), \
+             patch("pipeline.ingest.save_state"), \
+             patch("pipeline.ingest.save_manifest"):
+            run_full_load(mock_client, "bucket", state, manifest, run_id="run-resume")
+
+        # Only the resources not yet completed should have been ingested
+        self.assertEqual(ingested, RESOURCES[2:])
+
+    def test_run_full_load_fresh_clears_stale_cursors(self):
+        """A fresh full load must clear any cursors left over from a previous run."""
+        from pipeline.ingest import run_full_load
+
+        state = {
+            "cursors": {"vorgang": "stale-cursor"},
+            "last_seen_update": None,
+            "run_count": 1,
+            "full_load_run_id": None,
+            "full_load_completed_resources": [],
+        }
+        manifest = {"objects": []}
+        mock_client = self._make_empty_s3_client()
+
+        captured_states = []
+
+        def _fake_ingest(resource, api_key, client, bucket, s, m,
+                         incremental=False, s3_prefix=None, checkpoint_fn=None):
+            captured_states.append(dict(s))
+            return s, m
+
+        with patch("pipeline.ingest.ingest_resource", side_effect=_fake_ingest), \
+             patch("pipeline.ingest.load_api_key", return_value="key"), \
+             patch("pipeline.ingest.save_state"), \
+             patch("pipeline.ingest.save_manifest"):
+            run_full_load(mock_client, "bucket", state, manifest, run_id="run-new")
+
+        # The first ingest call should see an empty cursors dict (stale cursor cleared)
+        first_state = captured_states[0]
+        self.assertNotIn("vorgang", first_state.get("cursors", {}))
+
+    def test_run_full_load_sets_and_clears_full_load_run_id(self):
+        """run_full_load must set full_load_run_id at the start and clear it at the end."""
+        from pipeline.ingest import run_full_load
+
+        state = {
+            "cursors": {},
+            "last_seen_update": None,
+            "run_count": 1,
+            "full_load_run_id": None,
+            "full_load_completed_resources": [],
+        }
+        manifest = {"objects": []}
+        mock_client = self._make_empty_s3_client()
+
+        mid_run_states = []
+
+        def _fake_ingest(resource, api_key, client, bucket, s, m,
+                         incremental=False, s3_prefix=None, checkpoint_fn=None):
+            mid_run_states.append(s.get("full_load_run_id"))
+            return s, m
+
+        with patch("pipeline.ingest.ingest_resource", side_effect=_fake_ingest), \
+             patch("pipeline.ingest.load_api_key", return_value="key"), \
+             patch("pipeline.ingest.save_state"), \
+             patch("pipeline.ingest.save_manifest"):
+            final_state, _ = run_full_load(
+                mock_client, "bucket", state, manifest, run_id="run-xyz"
+            )
+
+        # run_id should be set while resources are being ingested
+        self.assertTrue(all(r == "run-xyz" for r in mid_run_states))
+        # and cleared once the run completes
+        self.assertIsNone(final_state.get("full_load_run_id"))
 
 
 if __name__ == "__main__":

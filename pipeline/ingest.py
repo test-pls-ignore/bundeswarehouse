@@ -20,12 +20,12 @@ import random
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 
-from pipeline.manifest import record_object, sha256_of_bytes
-from pipeline.state import clear_cursor, update_cursor, update_last_seen
+from pipeline.manifest import record_object, save_manifest, sha256_of_bytes
+from pipeline.state import clear_cursor, clear_full_load, mark_full_load_resource_done, save_state, set_full_load_run, update_cursor, update_last_seen
 from pipeline.storage import PREFIX_RAW, PREFIX_STAGING, PREFIX_CURRENT, copy_object, delete_prefix, list_prefix, upload_bytes
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,9 @@ DEFAULT_USER_AGENT = "bundeswarehouse/1.0 (+https://github.com/test-pls-ignore/b
 DEFAULT_REQUEST_DELAY = 0.5
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BACKOFF_MAX = 60.0
+
+# Number of batches between periodic state+manifest checkpoints during a full load.
+CHECKPOINT_INTERVAL = 50
 
 
 class ChallengePageError(RuntimeError):
@@ -285,6 +288,7 @@ def ingest_resource(
     manifest: Dict[str, Any],
     incremental: bool = False,
     s3_prefix: Optional[str] = None,
+    checkpoint_fn: Optional[Callable[[Dict[str, Any], Dict[str, Any]], None]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Fetch all pages of a resource, upload each batch to MinIO, and update state/manifest.
@@ -292,6 +296,10 @@ def ingest_resource(
     If *s3_prefix* is given, objects are uploaded under that prefix (e.g.
     ``raw/_staging/<run_id>/``).  When *s3_prefix* is ``None``, the default
     date-partitioned layout under ``raw/`` is used.
+
+    *checkpoint_fn*, if provided, is called with the current (state, manifest) every
+    :data:`CHECKPOINT_INTERVAL` batches.  Use this to persist progress to S3 so that an
+    interrupted full-load run can be resumed.
 
     Returns (updated_state, updated_manifest).
 
@@ -306,8 +314,23 @@ def ingest_resource(
     retry_backoff_max = config["retry_backoff_max"]
 
     updated_after = state.get("last_seen_update") if incremental else None
-    cursor = state.get("cursors", {}).get(resource) if incremental else None
-    batch_index = 0
+    # Always read any saved cursor for this resource; for a fresh full load the cursor
+    # will be None (cleared before the run starts), and for a resumed run it holds the
+    # last confirmed position.
+    cursor = state.get("cursors", {}).get(resource)
+
+    # When resuming a partially-uploaded resource under a staging prefix, start
+    # batch numbering after the objects that are already in S3.
+    if s3_prefix is not None and cursor is not None:
+        existing = list_prefix(client, bucket, f"{s3_prefix}{resource}/")
+        batch_index = len(existing)
+        logger.info(
+            "Resuming resource '%s' at batch %d (cursor=%s).",
+            resource, batch_index, cursor,
+        )
+    else:
+        batch_index = 0
+
     total_docs = 0
 
     logger.info(
@@ -360,6 +383,11 @@ def ingest_resource(
             ):
                 state = update_last_seen(state, doc_date)
 
+        # Periodic checkpoint: persist progress so the run can be resumed if interrupted.
+        # This is checked before the cursor-based exit so it fires even on the last batch.
+        if checkpoint_fn is not None and batch_index > 0 and batch_index % CHECKPOINT_INTERVAL == 0:
+            checkpoint_fn(state, manifest)
+
         if next_cursor:
             state = update_cursor(state, resource, next_cursor)
             cursor = next_cursor
@@ -382,19 +410,65 @@ def run_full_load(
     manifest: Dict[str, Any],
     run_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Run a full ingest of all resources.
+    """Run a full ingest of all resources, with support for resuming interrupted runs.
 
-    When *run_id* is provided, objects are written to the staging prefix
-    ``raw/_staging/<run_id>/``.  Call :func:`publish_full_load` after a
-    successful run to promote the staging data to ``raw/current/``.
+    On the first invocation *run_id* is used as the staging prefix
+    ``raw/_staging/<run_id>/``.  Progress (cursors and completed-resource list)
+    is saved to S3 after every :data:`CHECKPOINT_INTERVAL` batches **and** after
+    each resource finishes, so a run that is interrupted (e.g. by a job timeout)
+    can be continued by simply re-triggering the workflow.
+
+    On resume the in-progress ``run_id`` is read from ``state["full_load_run_id"]``,
+    resources listed in ``state["full_load_completed_resources"]`` are skipped, and
+    the cursor stored in ``state["cursors"][resource]`` is used to pick up the
+    partially-fetched resource.
+
+    Call :func:`publish_full_load` after a successful run to promote the staging
+    data to ``raw/current/``.
     """
     api_key = load_api_key()
-    s3_prefix = f"{PREFIX_STAGING}{run_id}/" if run_id else None
+
+    # Determine whether we are resuming an interrupted run or starting fresh.
+    saved_run_id = state.get("full_load_run_id")
+    if saved_run_id is not None:
+        effective_run_id = saved_run_id
+        completed = list(state.get("full_load_completed_resources", []))
+        logger.info(
+            "Resuming full load run_id=%s (already completed: %s).",
+            effective_run_id,
+            completed,
+        )
+    else:
+        effective_run_id = run_id
+        completed = []
+        # Clear any stale per-resource cursors left over from a previous run.
+        for resource in RESOURCES:
+            state = clear_cursor(state, resource)
+        state = set_full_load_run(state, effective_run_id)
+        logger.info("Starting fresh full load (run_id=%s).", effective_run_id)
+
+    s3_prefix = f"{PREFIX_STAGING}{effective_run_id}/"
+
+    def _checkpoint(s: Dict[str, Any], m: Dict[str, Any]) -> None:
+        """Persist state and manifest to S3 so the run can be resumed if interrupted."""
+        save_state(s, client, bucket)
+        save_manifest(m, client, bucket)
+
     for resource in RESOURCES:
+        if resource in completed:
+            logger.info("Skipping already-completed resource '%s'.", resource)
+            continue
         state, manifest = ingest_resource(
             resource, api_key, client, bucket, state, manifest,
             incremental=False, s3_prefix=s3_prefix,
+            checkpoint_fn=_checkpoint,
         )
+        # Record completion and save progress before moving to the next resource.
+        state = mark_full_load_resource_done(state, resource)
+        _checkpoint(state, manifest)
+
+    # All resources done – clear the in-progress tracking fields.
+    state = clear_full_load(state)
     return state, manifest
 
 

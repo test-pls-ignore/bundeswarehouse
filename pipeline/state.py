@@ -40,6 +40,8 @@ _DEFAULT_STATE: Dict[str, Any] = {
     "last_seen_update": None,
     "cursors": {},
     "run_count": 0,
+    "full_load_run_id": None,
+    "full_load_completed_resources": [],
 }
 
 
@@ -113,4 +115,30 @@ def update_last_seen(state: Dict[str, Any], timestamp: str) -> Dict[str, Any]:
     """Return a copy of state with last_seen_update set to timestamp."""
     updated = dict(state)
     updated["last_seen_update"] = timestamp
+    return updated
+
+
+def set_full_load_run(state: Dict[str, Any], run_id: str) -> Dict[str, Any]:
+    """Return a copy of state recording the start of a full-load run."""
+    updated = dict(state)
+    updated["full_load_run_id"] = run_id
+    updated["full_load_completed_resources"] = list(state.get("full_load_completed_resources", []))
+    return updated
+
+
+def mark_full_load_resource_done(state: Dict[str, Any], resource: str) -> Dict[str, Any]:
+    """Return a copy of state with *resource* recorded as completed in the current full load."""
+    updated = dict(state)
+    completed = list(state.get("full_load_completed_resources", []))
+    if resource not in completed:
+        completed.append(resource)
+    updated["full_load_completed_resources"] = completed
+    return updated
+
+
+def clear_full_load(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of state with full-load tracking fields reset."""
+    updated = dict(state)
+    updated["full_load_run_id"] = None
+    updated["full_load_completed_resources"] = []
     return updated

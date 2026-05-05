@@ -71,14 +71,15 @@ def cmd_full_load(_args) -> int:
     after **all** resources finish successfully are they copied to
     ``raw/current/`` and the staging prefix is deleted.
 
-    If the run fails mid-way:
+    If the run fails mid-way (or is interrupted by a job timeout):
     - ``raw/current/`` is **not** modified (it still reflects the last
       successful run).
-    - The staging data is kept under ``raw/_staging/<run_id>/`` for
-      inspection.  Re-running the workflow starts a fresh staging prefix
-      (new ``run_id``), so no duplicates are created in ``raw/current/``.
-    - Use the ``cleanup-staging`` action or the *Cleanup S3 Prefixes*
-      workflow to remove leftover staging data.
+    - The staging data is kept under ``raw/_staging/<run_id>/`` and the
+      ``run_id``, completed resources, and per-resource cursors are saved to
+      state so that re-triggering the workflow **resumes** from where the run
+      was interrupted rather than starting over.
+    - Use the ``cleanup-staging`` action or the *Cleanup S3 Prefixes* workflow
+      to remove leftover staging data after an abandoned run.
     """
     if not os.environ.get("BUNDESTAG_API_KEY", "").strip():
         logger.error(
@@ -93,19 +94,30 @@ def cmd_full_load(_args) -> int:
     ensure_bucket_exists(client, bucket)
 
     state = load_state(client, bucket)
-    # Always start with a fresh manifest for a full load so that the manifest
-    # reflects only the objects from this run after publish.
-    manifest: dict = {"created_at": None, "updated_at": None, "objects": []}
 
-    state = mark_run_start(state)
-    run_id = _generate_run_id()
-    logger.info(
-        "Starting full load (run #%d, run_id=%s). "
-        "Staging prefix: raw/_staging/%s/",
-        state["run_count"],
-        run_id,
-        run_id,
-    )
+    # Detect whether we are resuming an interrupted run.
+    existing_run_id = state.get("full_load_run_id")
+    if existing_run_id:
+        run_id = existing_run_id
+        # Load the manifest that was saved during the previous attempt so that
+        # objects already uploaded are not lost.
+        manifest = load_manifest(client, bucket)
+        logger.info(
+            "Resuming interrupted full load (run_id=%s, run #%d).",
+            run_id,
+            state.get("run_count", 0),
+        )
+    else:
+        state = mark_run_start(state)
+        run_id = _generate_run_id()
+        manifest: dict = {"created_at": None, "updated_at": None, "objects": []}
+        logger.info(
+            "Starting full load (run #%d, run_id=%s). "
+            "Staging prefix: raw/_staging/%s/",
+            state["run_count"],
+            run_id,
+            run_id,
+        )
 
     try:
         state, manifest = run_full_load(client, bucket, state, manifest, run_id=run_id)
@@ -113,7 +125,7 @@ def cmd_full_load(_args) -> int:
         logger.error("Full load aborted – WAF challenge page blocked the request: %s", exc)
         logger.info(
             "Staging data for run %s kept at raw/_staging/%s/ for inspection. "
-            "raw/current/ is unchanged. Re-run the workflow to start a fresh attempt.",
+            "raw/current/ is unchanged. Re-run the workflow to resume.",
             run_id,
             run_id,
         )
@@ -123,7 +135,7 @@ def cmd_full_load(_args) -> int:
         logger.error("Full load failed: %s", exc, exc_info=True)
         logger.info(
             "Staging data for run %s kept at raw/_staging/%s/ for inspection. "
-            "raw/current/ is unchanged. Re-run the workflow to start a fresh attempt.",
+            "raw/current/ is unchanged. Re-run the workflow to resume.",
             run_id,
             run_id,
         )

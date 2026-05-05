@@ -15,6 +15,7 @@ on:
 jobs:
   full-ingest:
     runs-on: [self-hosted, vps]
+    timeout-minutes: 1440  # 24 hours; pipeline is resumable so re-runs pick up where they left off
     permissions:
       contents: write
 

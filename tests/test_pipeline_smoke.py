@@ -710,14 +710,15 @@ class TestPublishFullLoad(unittest.TestCase):
         ]
         self.assertEqual(len(latest_run_calls), 1)
         body = latest_run_calls[0].kwargs["Body"]
-        import json as _json
-        pointer = _json.loads(body)
+        pointer = json.loads(body)
         self.assertEqual(pointer["run_id"], "run-abc")
         self.assertEqual(pointer["run_count"], 3)
 
 
 class TestCleanupCLI(unittest.TestCase):
     """Tests for pipeline.cli cleanup-staging and cleanup-current."""
+
+    _S3_ENV_VARS = ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_BUCKET"]
 
     def setUp(self):
         os.environ["S3_ACCESS_KEY_ID"] = "testkey"
@@ -726,7 +727,7 @@ class TestCleanupCLI(unittest.TestCase):
         os.environ["S3_BUCKET"] = "test-bucket"
 
     def tearDown(self):
-        for var in ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_BUCKET"]:
+        for var in self._S3_ENV_VARS:
             os.environ.pop(var, None)
 
     def _make_mock_s3(self, keys=None):

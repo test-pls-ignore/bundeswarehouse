@@ -118,7 +118,8 @@ def cmd_full_load(_args) -> int:
             run_id,
         )
         return 1
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # Intentionally broad: any unhandled error (network, S3, etc.)
+        # preserves staging data so the operator can inspect what was downloaded.
         logger.error("Full load failed: %s", exc, exc_info=True)
         logger.info(
             "Staging data for run %s kept at raw/_staging/%s/ for inspection. "

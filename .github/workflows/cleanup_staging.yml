@@ -28,6 +28,8 @@ on:
 jobs:
   cleanup:
     runs-on: [self-hosted, vps]
+    permissions:
+      contents: read
 
     env:
       S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}

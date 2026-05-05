@@ -23,6 +23,62 @@ BUNDESTAG_API_KEY=your_key python -m pipeline.cli incremental-update
 
 ---
 
+## S3 layout
+
+```
+raw/
+  _staging/
+    <run_id>/          ← in-progress full-load data (temporary)
+      vorgang/
+        batch_00001.ndjson
+        …
+      drucksache/
+        …
+  current/             ← latest successful full-load snapshot (canonical)
+    vorgang/
+      batch_00001.ndjson
+      …
+    drucksache/
+      …
+  LATEST_RUN.json      ← pointer: run_id + published_at of the last successful run
+manifests/
+  state.json
+  latest.json          ← manifest of objects currently in raw/current/
+```
+
+---
+
+## Latest-only publish strategy
+
+The full-load workflow uses a **staging → publish** approach to guarantee that
+`raw/current/` always contains a complete, consistent dataset:
+
+1. **Staging write**: all objects are uploaded to
+   `raw/_staging/<run_id>/…` during the run.
+2. **Atomic-ish publish** (on success):
+   - `raw/current/` is cleared.
+   - Objects are copied from `raw/_staging/<run_id>/` to `raw/current/`.
+   - `raw/LATEST_RUN.json` is updated with the new `run_id` and timestamp.
+   - The staging prefix is deleted.
+3. **On failure**: `raw/current/` is **not touched** — it still reflects the
+   last successful run.  Staging data is kept for inspection.
+
+### Re-running after a failure
+
+Because every run gets a fresh `run_id`, re-running `full_ingest.yml` is safe:
+
+- A new staging prefix (`raw/_staging/<new_run_id>/`) is created from scratch.
+- The old failed staging prefix (`raw/_staging/<old_run_id>/`) is left in place
+  until you clean it up.
+- `raw/current/` is only updated once the new run completes successfully.
+
+**No duplicates are ever created in `raw/current/`.**
+
+To clean up leftover staging data from failed runs, use the
+[Cleanup S3 Prefixes](#cleanup-workflow) workflow.
+
+---
+
 ## Environment variables
 
 ### Required
@@ -52,6 +108,44 @@ BUNDESTAG_API_KEY=your_key python -m pipeline.cli incremental-update
 
 ---
 
+## Cleanup workflow
+
+The **Cleanup S3 Prefixes** workflow (`cleanup_staging.yml`) lets you safely
+delete S3 prefixes via GitHub Actions without needing direct S3 access.
+
+### How to trigger
+
+1. Go to **Actions → Cleanup S3 Prefixes → Run workflow**.
+2. Fill in the inputs:
+
+| Input | Description |
+|---|---|
+| `confirm` | Must be exactly `DELETE` (all caps). Anything else aborts the job. |
+| `target` | What to delete (see table below). |
+
+### Target values
+
+| Target | Prefix deleted | When to use |
+|---|---|---|
+| `staging` *(default)* | `raw/_staging/` | Clean up leftover staging data from failed runs. |
+| `current` | `raw/current/` | Wipe the entire published dataset (data will be empty until next successful full-load). |
+| `current/<resource>` | `raw/current/<resource>/` | Wipe one resource, e.g. `current/aktivitaet`. |
+
+### CLI equivalents (local use)
+
+```bash
+# Delete all staging data
+python -m pipeline.cli cleanup-staging
+
+# Delete the entire published dataset
+python -m pipeline.cli cleanup-current
+
+# Delete one resource from the published dataset
+python -m pipeline.cli cleanup-current --resource aktivitaet
+```
+
+---
+
 ## Failure modes
 
 ### WAF / anti-bot challenge page (`ChallengePageError`)
@@ -73,11 +167,13 @@ To reduce the likelihood of being blocked:
 - Make sure `DIP_USER_AGENT` identifies your bot appropriately.
 - Use an authenticated API key with appropriate quotas.
 
-### Transient errors (429 / 5xx)
+### Transient errors (429 / 5xx / 401)
 
 The pipeline automatically retries up to `DIP_MAX_RETRIES` times with exponential
 backoff capped at `DIP_RETRY_BACKOFF_MAX` seconds. If all retries fail, the
-exception propagates and the run exits with a non-zero status code.
+exception propagates and the run exits with a non-zero status code.  `401`
+responses are treated as transient (some gateways return `401` instead of `429`
+when rate-limiting or applying quota controls).
 
 ### Incorrect stop condition
 

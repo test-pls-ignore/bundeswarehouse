@@ -504,6 +504,278 @@ class TestCLIApiKeyValidation(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+class TestPrefixHelpers(unittest.TestCase):
+    """Tests for pipeline.storage list_prefix / delete_prefix / copy_object."""
+
+    # ------------------------------------------------------------------ #
+    # list_prefix                                                          #
+    # ------------------------------------------------------------------ #
+
+    def test_list_prefix_returns_all_keys(self):
+        """list_prefix should collect every key returned by the paginator."""
+        from pipeline.storage import list_prefix
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = iter([
+            {"Contents": [
+                {"Key": "raw/_staging/run1/vorgang/batch_00001.ndjson"},
+                {"Key": "raw/_staging/run1/vorgang/batch_00002.ndjson"},
+            ]},
+            {"Contents": [
+                {"Key": "raw/_staging/run1/drucksache/batch_00001.ndjson"},
+            ]},
+        ])
+
+        keys = list_prefix(mock_client, "bucket", "raw/_staging/run1/")
+
+        self.assertEqual(len(keys), 3)
+        self.assertIn("raw/_staging/run1/vorgang/batch_00001.ndjson", keys)
+        self.assertIn("raw/_staging/run1/drucksache/batch_00001.ndjson", keys)
+        mock_client.get_paginator.assert_called_once_with("list_objects_v2")
+
+    def test_list_prefix_returns_empty_when_no_contents(self):
+        """list_prefix should return [] when no objects match the prefix."""
+        from pipeline.storage import list_prefix
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = iter([{}])  # page with no 'Contents'
+
+        keys = list_prefix(mock_client, "bucket", "raw/_staging/nonexistent/")
+
+        self.assertEqual(keys, [])
+
+    # ------------------------------------------------------------------ #
+    # delete_prefix                                                        #
+    # ------------------------------------------------------------------ #
+
+    def test_delete_prefix_deletes_all_objects(self):
+        """delete_prefix should call delete_objects with all found keys."""
+        from pipeline.storage import delete_prefix
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = iter([
+            {"Contents": [
+                {"Key": "raw/_staging/run1/a.ndjson"},
+                {"Key": "raw/_staging/run1/b.ndjson"},
+            ]},
+        ])
+
+        count = delete_prefix(mock_client, "bucket", "raw/_staging/run1/")
+
+        self.assertEqual(count, 2)
+        mock_client.delete_objects.assert_called_once_with(
+            Bucket="bucket",
+            Delete={"Objects": [
+                {"Key": "raw/_staging/run1/a.ndjson"},
+                {"Key": "raw/_staging/run1/b.ndjson"},
+            ]},
+        )
+
+    def test_delete_prefix_returns_zero_on_empty_prefix(self):
+        """delete_prefix should return 0 and skip delete_objects when nothing found."""
+        from pipeline.storage import delete_prefix
+
+        mock_client = MagicMock()
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = iter([{}])
+
+        count = delete_prefix(mock_client, "bucket", "raw/_staging/nonexistent/")
+
+        self.assertEqual(count, 0)
+        mock_client.delete_objects.assert_not_called()
+
+
+class TestMakeS3KeyStaging(unittest.TestCase):
+    """Tests for pipeline.ingest._make_s3_key with the prefix parameter."""
+
+    def test_make_s3_key_with_prefix_uses_prefix(self):
+        """When prefix is given, key should be <prefix><resource>/batch_XXXXX.ndjson."""
+        from pipeline.ingest import _make_s3_key
+
+        key = _make_s3_key("vorgang", 5, prefix="raw/_staging/run1/")
+        self.assertEqual(key, "raw/_staging/run1/vorgang/batch_00005.ndjson")
+
+    def test_make_s3_key_without_prefix_uses_date(self):
+        """Without a prefix, key should follow the legacy date-partitioned layout."""
+        from pipeline.ingest import _make_s3_key
+
+        key = _make_s3_key("vorgang", 0)
+        self.assertRegex(key, r"^raw/vorgang/\d{4}-\d{2}-\d{2}/batch_00000\.ndjson$")
+
+    def test_make_s3_key_zero_pads_batch_index(self):
+        """Batch index should be zero-padded to 5 digits."""
+        from pipeline.ingest import _make_s3_key
+
+        key = _make_s3_key("drucksache", 42, prefix="raw/_staging/run1/")
+        self.assertEqual(key, "raw/_staging/run1/drucksache/batch_00042.ndjson")
+
+
+class TestPublishFullLoad(unittest.TestCase):
+    """Tests for pipeline.ingest.publish_full_load."""
+
+    def _make_client_with_staging_keys(self, staging_keys):
+        """Return a mock S3 client whose paginator yields:
+        - first call: empty (for delete_prefix of current/)
+        - second call: staging keys (for list_prefix of staging/)
+        """
+        mock_client = MagicMock()
+        paginator_current = MagicMock()
+        paginator_current.paginate.return_value = iter([{}])  # empty current
+        paginator_staging = MagicMock()
+        page = {"Contents": [{"Key": k} for k in staging_keys]} if staging_keys else {}
+        paginator_staging.paginate.return_value = iter([page])
+        mock_client.get_paginator.side_effect = [paginator_current, paginator_staging]
+        return mock_client
+
+    def test_manifest_keys_remapped_from_staging_to_current(self):
+        """publish_full_load must remap manifest object keys from staging to current."""
+        from pipeline.ingest import publish_full_load
+
+        staging_keys = [
+            "raw/_staging/run1/vorgang/batch_00001.ndjson",
+            "raw/_staging/run1/drucksache/batch_00001.ndjson",
+        ]
+        mock_client = self._make_client_with_staging_keys(staging_keys)
+        manifest = {
+            "objects": [
+                {"key": "raw/_staging/run1/vorgang/batch_00001.ndjson", "size_bytes": 100},
+                {"key": "raw/_staging/run1/drucksache/batch_00001.ndjson", "size_bytes": 200},
+            ]
+        }
+        state = {"run_count": 1}
+
+        updated = publish_full_load(mock_client, "bucket", "run1", state, manifest)
+
+        keys = [o["key"] for o in updated["objects"]]
+        self.assertIn("raw/current/vorgang/batch_00001.ndjson", keys)
+        self.assertIn("raw/current/drucksache/batch_00001.ndjson", keys)
+        self.assertNotIn("raw/_staging/run1/vorgang/batch_00001.ndjson", keys)
+        self.assertNotIn("raw/_staging/run1/drucksache/batch_00001.ndjson", keys)
+
+    def test_copy_object_called_for_each_staging_key(self):
+        """publish_full_load must copy every staging object to current."""
+        from pipeline.ingest import publish_full_load
+
+        staging_keys = [
+            "raw/_staging/run1/vorgang/batch_00001.ndjson",
+            "raw/_staging/run1/vorgang/batch_00002.ndjson",
+        ]
+        mock_client = self._make_client_with_staging_keys(staging_keys)
+        manifest = {"objects": [{"key": k, "size_bytes": 10} for k in staging_keys]}
+        state = {"run_count": 2}
+
+        publish_full_load(mock_client, "bucket", "run1", state, manifest)
+
+        self.assertEqual(mock_client.copy_object.call_count, 2)
+
+    def test_staging_objects_deleted_after_publish(self):
+        """publish_full_load must delete staging objects once they are copied."""
+        from pipeline.ingest import publish_full_load
+
+        staging_keys = ["raw/_staging/run1/vorgang/batch_00001.ndjson"]
+        mock_client = self._make_client_with_staging_keys(staging_keys)
+        manifest = {"objects": [{"key": k, "size_bytes": 50} for k in staging_keys]}
+        state = {"run_count": 1}
+
+        publish_full_load(mock_client, "bucket", "run1", state, manifest)
+
+        all_delete_calls = mock_client.delete_objects.call_args_list
+        deleted_keys = []
+        for call in all_delete_calls:
+            deleted_keys.extend(
+                obj["Key"] for obj in call.kwargs.get("Delete", {}).get("Objects", [])
+            )
+        self.assertIn("raw/_staging/run1/vorgang/batch_00001.ndjson", deleted_keys)
+
+    def test_latest_run_json_written_on_publish(self):
+        """publish_full_load must upload LATEST_RUN.json with the correct run_id."""
+        from pipeline.ingest import publish_full_load
+
+        mock_client = self._make_client_with_staging_keys([])
+        manifest = {"objects": []}
+        state = {"run_count": 3}
+
+        publish_full_load(mock_client, "bucket", "run-abc", state, manifest)
+
+        put_calls = mock_client.put_object.call_args_list
+        latest_run_calls = [
+            c for c in put_calls if c.kwargs.get("Key") == "raw/LATEST_RUN.json"
+        ]
+        self.assertEqual(len(latest_run_calls), 1)
+        body = latest_run_calls[0].kwargs["Body"]
+        pointer = json.loads(body)
+        self.assertEqual(pointer["run_id"], "run-abc")
+        self.assertEqual(pointer["run_count"], 3)
+
+
+class TestCleanupCLI(unittest.TestCase):
+    """Tests for pipeline.cli cleanup-staging and cleanup-current."""
+
+    _S3_ENV_VARS = ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_BUCKET"]
+
+    def setUp(self):
+        os.environ["S3_ACCESS_KEY_ID"] = "testkey"
+        os.environ["S3_SECRET_ACCESS_KEY"] = "testsecret"
+        os.environ["S3_ENDPOINT_URL"] = "http://127.0.0.1:9000"
+        os.environ["S3_BUCKET"] = "test-bucket"
+
+    def tearDown(self):
+        for var in self._S3_ENV_VARS:
+            os.environ.pop(var, None)
+
+    def _make_mock_s3(self, keys=None):
+        mock_client = MagicMock()
+        paginator = MagicMock()
+        mock_client.get_paginator.return_value = paginator
+        contents = [{"Key": k} for k in (keys or [])]
+        paginator.paginate.return_value = iter(
+            [{"Contents": contents}] if contents else [{}]
+        )
+        return mock_client
+
+    def test_cleanup_staging_returns_0(self):
+        from pipeline.cli import cmd_cleanup_staging
+
+        with patch("pipeline.cli.get_s3_client") as mock_get, \
+             patch("pipeline.cli.get_bucket_name", return_value="test-bucket"):
+            mock_get.return_value = self._make_mock_s3()
+            result = cmd_cleanup_staging(None)
+
+        self.assertEqual(result, 0)
+
+    def test_cleanup_current_no_resource_returns_0(self):
+        from pipeline.cli import cmd_cleanup_current
+
+        args = MagicMock()
+        args.resource = None
+
+        with patch("pipeline.cli.get_s3_client") as mock_get, \
+             patch("pipeline.cli.get_bucket_name", return_value="test-bucket"):
+            mock_get.return_value = self._make_mock_s3()
+            result = cmd_cleanup_current(args)
+
+        self.assertEqual(result, 0)
+
+    def test_cleanup_current_with_resource_returns_0(self):
+        from pipeline.cli import cmd_cleanup_current
+
+        args = MagicMock()
+        args.resource = "aktivitaet"
+
+        with patch("pipeline.cli.get_s3_client") as mock_get, \
+             patch("pipeline.cli.get_bucket_name", return_value="test-bucket"):
+            mock_get.return_value = self._make_mock_s3()
+            result = cmd_cleanup_current(args)
+
+        self.assertEqual(result, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
-

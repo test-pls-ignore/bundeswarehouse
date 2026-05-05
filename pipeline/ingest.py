@@ -26,7 +26,7 @@ import requests
 
 from pipeline.manifest import record_object, sha256_of_bytes
 from pipeline.state import clear_cursor, update_cursor, update_last_seen
-from pipeline.storage import PREFIX_RAW, upload_bytes
+from pipeline.storage import PREFIX_RAW, PREFIX_STAGING, PREFIX_CURRENT, copy_object, delete_prefix, list_prefix, upload_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +263,15 @@ def fetch_page(
     raise RuntimeError(f"fetch_page for {resource!r} failed after {max_retries} retries")
 
 
-def _make_s3_key(resource: str, batch_index: int) -> str:
+def _make_s3_key(resource: str, batch_index: int, prefix: Optional[str] = None) -> str:
+    """Return the S3 key for a batch file.
+
+    If *prefix* is given, the key is ``{prefix}{resource}/batch_{batch_index:05d}.ndjson``
+    (used for staging runs).  Otherwise the legacy date-partitioned layout under
+    ``raw/`` is used.
+    """
+    if prefix is not None:
+        return f"{prefix}{resource}/batch_{batch_index:05d}.ndjson"
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     return f"{PREFIX_RAW}{resource}/{date_str}/batch_{batch_index:05d}.ndjson"
 
@@ -276,9 +284,14 @@ def ingest_resource(
     state: Dict[str, Any],
     manifest: Dict[str, Any],
     incremental: bool = False,
+    s3_prefix: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Fetch all pages of a resource, upload each batch to MinIO, and update state/manifest.
+
+    If *s3_prefix* is given, objects are uploaded under that prefix (e.g.
+    ``raw/_staging/<run_id>/``).  When *s3_prefix* is ``None``, the default
+    date-partitioned layout under ``raw/`` is used.
 
     Returns (updated_state, updated_manifest).
 
@@ -330,7 +343,7 @@ def ingest_resource(
             "\n".join(json.dumps(d, ensure_ascii=False) for d in docs) + "\n"
         ).encode()
         checksum = sha256_of_bytes(ndjson_bytes)
-        key = _make_s3_key(resource, batch_index)
+        key = _make_s3_key(resource, batch_index, prefix=s3_prefix)
 
         upload_bytes(client, bucket, key, ndjson_bytes, content_type="application/x-ndjson")
         manifest = record_object(manifest, key, len(ndjson_bytes), checksum)
@@ -367,14 +380,96 @@ def run_full_load(
     bucket: str,
     state: Dict[str, Any],
     manifest: Dict[str, Any],
+    run_id: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Run a full ingest of all resources."""
+    """Run a full ingest of all resources.
+
+    When *run_id* is provided, objects are written to the staging prefix
+    ``raw/_staging/<run_id>/``.  Call :func:`publish_full_load` after a
+    successful run to promote the staging data to ``raw/current/``.
+    """
     api_key = load_api_key()
+    s3_prefix = f"{PREFIX_STAGING}{run_id}/" if run_id else None
     for resource in RESOURCES:
         state, manifest = ingest_resource(
-            resource, api_key, client, bucket, state, manifest, incremental=False
+            resource, api_key, client, bucket, state, manifest,
+            incremental=False, s3_prefix=s3_prefix,
         )
     return state, manifest
+
+
+def publish_full_load(
+    client,
+    bucket: str,
+    run_id: str,
+    state: Dict[str, Any],
+    manifest: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Promote a completed staging run to the canonical ``raw/current/`` prefix.
+
+    Steps:
+    1. Delete all existing objects under ``raw/current/``.
+    2. Copy all objects from ``raw/_staging/<run_id>/`` to ``raw/current/``.
+    3. Write the ``raw/LATEST_RUN.json`` pointer file.
+    4. Remap the in-memory manifest keys from staging to current.
+    5. Delete the staging objects.
+
+    Returns the updated manifest (with current/ keys).
+    """
+    staging_prefix = f"{PREFIX_STAGING}{run_id}/"
+
+    # 1. Clear existing current/
+    deleted_current = delete_prefix(client, bucket, PREFIX_CURRENT)
+    logger.info("Cleared %d existing objects from %r.", deleted_current, PREFIX_CURRENT)
+
+    # 2. Enumerate staging objects once (reused for copy and delete)
+    staging_keys = list_prefix(client, bucket, staging_prefix)
+    logger.info(
+        "Publishing %d objects from staging run %r to %r.",
+        len(staging_keys),
+        run_id,
+        PREFIX_CURRENT,
+    )
+    for key in staging_keys:
+        relative = key[len(staging_prefix):]
+        dst_key = f"{PREFIX_CURRENT}{relative}"
+        copy_object(client, bucket, key, dst_key)
+    logger.info("Copied %d objects to %r.", len(staging_keys), PREFIX_CURRENT)
+
+    # 3. Write LATEST_RUN.json pointer
+    pointer: Dict[str, Any] = {
+        "run_id": run_id,
+        "published_at": datetime.now(timezone.utc).isoformat(),
+        "run_count": state.get("run_count"),
+    }
+    upload_bytes(
+        client,
+        bucket,
+        f"{PREFIX_RAW}LATEST_RUN.json",
+        json.dumps(pointer, indent=2).encode(),
+        content_type="application/json",
+    )
+    logger.info("Wrote LATEST_RUN.json (run_id=%r).", run_id)
+
+    # 4. Remap manifest keys staging → current
+    updated_objects = []
+    for obj in manifest.get("objects", []):
+        key = obj["key"]
+        if key.startswith(staging_prefix):
+            relative = key[len(staging_prefix):]
+            updated_objects.append({**obj, "key": f"{PREFIX_CURRENT}{relative}"})
+        else:
+            updated_objects.append(obj)
+    manifest = {**manifest, "objects": updated_objects}
+
+    # 5. Delete staging objects (we already have the key list)
+    if staging_keys:
+        for i in range(0, len(staging_keys), 1000):
+            batch = [{"Key": k} for k in staging_keys[i : i + 1000]]
+            client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        logger.info("Deleted %d staging objects for run %r.", len(staging_keys), run_id)
+
+    return manifest
 
 
 def run_incremental(

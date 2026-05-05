@@ -1,0 +1,83 @@
+name: Cleanup S3 Prefixes
+
+# Manual workflow to safely delete S3 staging or current prefixes.
+# Requires an explicit confirmation string to prevent accidental data loss.
+#
+# Target values:
+#   staging              → deletes raw/_staging/  (all partial/failed runs)
+#   current              → deletes raw/current/   (entire published dataset)
+#   current/<resource>   → deletes raw/current/<resource>/  (one resource only)
+#                          e.g.  current/aktivitaet
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: >
+          Type DELETE (all caps) to confirm deletion. Any other value aborts the job.
+        required: true
+        type: string
+      target:
+        description: >
+          What to delete: 'staging', 'current', or 'current/<resource>'
+          (e.g. current/aktivitaet).
+        required: true
+        default: staging
+        type: string
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, vps]
+    permissions:
+      contents: read
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: ${{ contains(runner.name, 'GitHub Actions') }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Python virtualenv (self-hosted)
+        if: "contains(runner.labels, 'self-hosted')"
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "DELETE" ]; then
+            echo "Confirmation input must be exactly 'DELETE'. Got: '${{ inputs.confirm }}'" >&2
+            exit 1
+          fi
+
+      - name: Run cleanup
+        run: |
+          TARGET="${{ inputs.target }}"
+          if [ "$TARGET" = "staging" ]; then
+            echo "Deleting raw/_staging/ …"
+            python -m pipeline.cli cleanup-staging
+          elif [ "$TARGET" = "current" ]; then
+            echo "Deleting raw/current/ …"
+            python -m pipeline.cli cleanup-current
+          elif [[ "$TARGET" == current/* ]]; then
+            RESOURCE="${TARGET#current/}"
+            echo "Deleting raw/current/${RESOURCE}/ …"
+            python -m pipeline.cli cleanup-current --resource "$RESOURCE"
+          else
+            echo "Unknown target: '$TARGET'. Use 'staging', 'current', or 'current/<resource>'." >&2
+            exit 1
+          fi

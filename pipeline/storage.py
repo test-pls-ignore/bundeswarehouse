@@ -13,7 +13,7 @@ import io
 import logging
 import os
 import time
-from typing import Optional
+from typing import List, Optional
 
 import boto3
 from botocore.exceptions import ClientError, EndpointConnectionError
@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 # Storage layout prefixes
 PREFIX_RAW = "raw/"
+PREFIX_STAGING = "raw/_staging/"
+PREFIX_CURRENT = "raw/current/"
 PREFIX_PROCESSED = "processed/"
 PREFIX_MANIFESTS = "manifests/"
 
@@ -190,3 +192,44 @@ def check_connection(client, bucket: str) -> bool:
     except EndpointConnectionError as exc:
         logger.error("S3 endpoint not reachable: %s", exc)
         return False
+
+
+def list_prefix(client, bucket: str, prefix: str) -> List[str]:
+    """Return the keys of all objects whose key starts with *prefix*."""
+    keys: List[str] = []
+    paginator = client.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys.append(obj["Key"])
+    return keys
+
+
+def delete_prefix(client, bucket: str, prefix: str) -> int:
+    """Delete every object whose key starts with *prefix*.
+
+    Objects are deleted in batches of 1000 (the S3 API maximum).
+    Returns the total number of objects deleted.
+    """
+    keys = list_prefix(client, bucket, prefix)
+    if not keys:
+        logger.debug("delete_prefix: no objects found under %r, nothing to delete.", prefix)
+        return 0
+
+    count = 0
+    for i in range(0, len(keys), 1000):
+        batch = [{"Key": k} for k in keys[i : i + 1000]]
+        client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        count += len(batch)
+
+    logger.info("Deleted %d objects under prefix %r.", count, prefix)
+    return count
+
+
+def copy_object(client, bucket: str, src_key: str, dst_key: str) -> None:
+    """Copy a single object within the same bucket."""
+    client.copy_object(
+        Bucket=bucket,
+        CopySource={"Bucket": bucket, "Key": src_key},
+        Key=dst_key,
+    )
+    logger.debug("Copied s3://%s/%s → s3://%s/%s", bucket, src_key, bucket, dst_key)

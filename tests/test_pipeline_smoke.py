@@ -368,6 +368,49 @@ class TestFetchPage(unittest.TestCase):
         self.assertEqual(len(docs), 1)
         self.assertEqual(session.get.call_count, 2)
 
+    def test_retries_on_401_then_succeeds(self):
+        """A 401 response should be retried; success on the second attempt is returned."""
+        from pipeline.ingest import fetch_page
+
+        body = json.dumps({"documents": [{"id": "1"}], "cursor": None}).encode()
+
+        unauthorized = MagicMock()
+        unauthorized.status_code = 401
+        unauthorized.url = "https://search.dip.bundestag.de/api/v1/aktivitaet"
+        unauthorized.headers = {"Content-Type": "application/json"}
+        unauthorized.text = '{"error": "Unauthorized"}'
+
+        success = _make_mock_response(
+            status_code=200,
+            content_type="application/json",
+            url="https://search.dip.bundestag.de/api/v1/aktivitaet",
+            body=body,
+        )
+        session = self._make_session_mock([unauthorized, success])
+
+        with patch("pipeline.ingest.time.sleep"):
+            docs, cursor = fetch_page(session, "aktivitaet", "testapikey", max_retries=1)
+
+        self.assertEqual(len(docs), 1)
+        self.assertEqual(session.get.call_count, 2)
+
+    def test_raises_after_all_401_retries_exhausted(self):
+        """After max_retries 401s, fetch_page must raise (not return empty list)."""
+        import requests as req_lib
+        from pipeline.ingest import fetch_page
+
+        unauthorized = MagicMock()
+        unauthorized.status_code = 401
+        unauthorized.url = "https://search.dip.bundestag.de/api/v1/aktivitaet"
+        unauthorized.headers = {"Content-Type": "application/json"}
+        unauthorized.text = '{"error": "Unauthorized"}'
+
+        session = self._make_session_mock([unauthorized, unauthorized, unauthorized])
+
+        with patch("pipeline.ingest.time.sleep"):
+            with self.assertRaises(req_lib.HTTPError):
+                fetch_page(session, "aktivitaet", "testapikey", max_retries=2)
+
     def test_raises_after_all_retries_exhausted(self):
         """After max_retries 429s, fetch_page must raise (not return empty list)."""
         import requests as req_lib
@@ -418,6 +461,47 @@ class TestIngestResourceChallengeHandling(unittest.TestCase):
 
         # No S3 uploads should have occurred
         mock_client.put_object.assert_not_called()
+
+
+class TestCLIApiKeyValidation(unittest.TestCase):
+    """Tests for early BUNDESTAG_API_KEY validation in CLI commands."""
+
+    def _clear_api_key(self):
+        os.environ.pop("BUNDESTAG_API_KEY", None)
+
+    def _set_api_key(self, value):
+        os.environ["BUNDESTAG_API_KEY"] = value
+
+    def tearDown(self):
+        os.environ.pop("BUNDESTAG_API_KEY", None)
+
+    def test_cmd_full_load_missing_api_key_returns_1(self):
+        """cmd_full_load must return 1 immediately when BUNDESTAG_API_KEY is missing."""
+        from pipeline.cli import cmd_full_load
+        self._clear_api_key()
+        result = cmd_full_load(None)
+        self.assertEqual(result, 1)
+
+    def test_cmd_full_load_empty_api_key_returns_1(self):
+        """cmd_full_load must return 1 immediately when BUNDESTAG_API_KEY is empty."""
+        from pipeline.cli import cmd_full_load
+        self._set_api_key("   ")
+        result = cmd_full_load(None)
+        self.assertEqual(result, 1)
+
+    def test_cmd_incremental_update_missing_api_key_returns_1(self):
+        """cmd_incremental_update must return 1 immediately when BUNDESTAG_API_KEY is missing."""
+        from pipeline.cli import cmd_incremental_update
+        self._clear_api_key()
+        result = cmd_incremental_update(None)
+        self.assertEqual(result, 1)
+
+    def test_cmd_incremental_update_empty_api_key_returns_1(self):
+        """cmd_incremental_update must return 1 immediately when BUNDESTAG_API_KEY is empty."""
+        from pipeline.cli import cmd_incremental_update
+        self._set_api_key("")
+        result = cmd_incremental_update(None)
+        self.assertEqual(result, 1)
 
 
 if __name__ == "__main__":

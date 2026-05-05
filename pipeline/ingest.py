@@ -19,7 +19,6 @@ import os
 import random
 import sys
 import time
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -264,8 +263,13 @@ def fetch_page(
 
 
 def _make_s3_key(resource: str, batch_index: int) -> str:
-    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return f"{PREFIX_RAW}{resource}/{date_str}/batch_{batch_index:05d}.ndjson"
+    """Return a deterministic S3 key for a resource batch.
+
+    The key is stable across re-runs: uploading the same batch index for the same
+    resource always produces the same key, so S3 put_object overwrites the existing
+    object rather than creating a duplicate.  This makes full-load re-runs idempotent.
+    """
+    return f"{PREFIX_RAW}{resource}/batch_{batch_index:05d}.ndjson"
 
 
 def ingest_resource(

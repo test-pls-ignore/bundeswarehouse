@@ -19,7 +19,7 @@ import sys
 from pipeline.ingest import ChallengePageError, run_full_load, run_incremental
 from pipeline.manifest import load_manifest, save_manifest
 from pipeline.state import load_state, mark_run_start, save_state
-from pipeline.storage import check_connection, ensure_bucket_exists, get_bucket_name, get_s3_client
+from pipeline.storage import check_connection, delete_prefix, ensure_bucket_exists, get_bucket_name, get_s3_client
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,6 +109,47 @@ def cmd_incremental_update(_args) -> int:
     return 0
 
 
+def cmd_cleanup_raw(args) -> int:
+    """Delete raw S3 objects under a given prefix after explicit confirmation."""
+    prefix = args.prefix
+    confirm = args.confirm
+
+    if confirm != "DELETE":
+        logger.error(
+            "Cleanup aborted: confirmation string must be exactly 'DELETE' "
+            "(got %r). Pass --confirm DELETE to proceed.",
+            confirm,
+        )
+        return 1
+
+    client = get_s3_client()
+    bucket = get_bucket_name()
+
+    # List objects first so the operator can see what will be removed.
+    paginator = client.get_paginator("list_objects_v2")
+    keys_to_delete = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys_to_delete.append(obj["Key"])
+
+    if not keys_to_delete:
+        logger.info("No objects found under s3://%s/%s – nothing to delete.", bucket, prefix)
+        return 0
+
+    logger.info(
+        "About to delete %d object(s) under s3://%s/%s:",
+        len(keys_to_delete),
+        bucket,
+        prefix,
+    )
+    for key in keys_to_delete:
+        logger.info("  WILL DELETE: s3://%s/%s", bucket, key)
+
+    deleted = delete_prefix(client, bucket, prefix)
+    logger.info("Cleanup complete: %d object(s) deleted under prefix %r.", deleted, prefix)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pipeline",
@@ -119,6 +160,21 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("check-connection", help="Smoke-test S3 connection and bucket access")
     subparsers.add_parser("full-load", help="Run a full ingest of all Bundestag data")
     subparsers.add_parser("incremental-update", help="Run an incremental ingest from saved state")
+
+    cleanup = subparsers.add_parser(
+        "cleanup-raw",
+        help="Delete raw S3 objects under a prefix (requires explicit --confirm DELETE)",
+    )
+    cleanup.add_argument(
+        "--prefix",
+        default="raw/",
+        help="S3 key prefix to delete (default: raw/). Example: raw/aktivitaet/",
+    )
+    cleanup.add_argument(
+        "--confirm",
+        default="",
+        help="Safety confirmation: must be exactly 'DELETE' to proceed.",
+    )
 
     return parser
 
@@ -131,6 +187,7 @@ def main() -> None:
         "check-connection": cmd_check_connection,
         "full-load": cmd_full_load,
         "incremental-update": cmd_incremental_update,
+        "cleanup-raw": cmd_cleanup_raw,
     }
     sys.exit(handlers[args.command](args))
 

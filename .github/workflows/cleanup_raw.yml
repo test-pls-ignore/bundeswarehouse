@@ -1,0 +1,54 @@
+name: Cleanup Raw Data – Delete S3 Objects
+
+# Manual trigger only.  This workflow deletes objects from S3; it requires an
+# explicit confirmation input to prevent accidental data loss.
+on:
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: >
+          S3 key prefix to delete (e.g. "raw/" for all raw data, or
+          "raw/aktivitaet/" for a single resource).
+        required: false
+        default: "raw/"
+        type: string
+      confirm:
+        description: >
+          Safety confirmation – type exactly DELETE (all caps) to proceed.
+          Any other value will abort the workflow without deleting anything.
+        required: true
+        default: ""
+        type: string
+
+jobs:
+  cleanup:
+    runs-on: [self-hosted, vps]
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv (self-hosted)
+        if: "contains(runner.labels, 'self-hosted')"
+        run: |
+          python3 -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check S3 connection
+        run: python -m pipeline.cli check-connection
+
+      - name: Run cleanup
+        run: |
+          echo "Deleting objects under prefix: ${{ inputs.prefix }}"
+          python -m pipeline.cli cleanup-raw \
+            --prefix "${{ inputs.prefix }}" \
+            --confirm "${{ inputs.confirm }}"

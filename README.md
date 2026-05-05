@@ -73,14 +73,86 @@ To reduce the likelihood of being blocked:
 - Make sure `DIP_USER_AGENT` identifies your bot appropriately.
 - Use an authenticated API key with appropriate quotas.
 
-### Transient errors (429 / 5xx)
+### Transient errors (429 / 5xx / 401)
 
 The pipeline automatically retries up to `DIP_MAX_RETRIES` times with exponential
-backoff capped at `DIP_RETRY_BACKOFF_MAX` seconds. If all retries fail, the
-exception propagates and the run exits with a non-zero status code.
+backoff capped at `DIP_RETRY_BACKOFF_MAX` seconds. Transient `401` responses
+(the DIP gateway sometimes returns 401 instead of 429 under sustained traffic)
+are also retried. If all retries fail, the exception propagates and the run exits
+with a non-zero status code.
 
 ### Incorrect stop condition
 
 Pagination only stops when a **valid JSON response** is received that contains no
 documents (or no cursor). Any HTTP error, invalid JSON, or unexpected response
 causes an exception rather than silently ending pagination.
+
+---
+
+## Operational guide: re-running after failure and avoiding duplicates
+
+### How duplicates are prevented (idempotent writes)
+
+Every NDJSON batch is stored at a **deterministic, stable key**:
+
+```
+raw/<resource>/batch_<NNNNN>.ndjson
+```
+
+For example: `raw/aktivitaet/batch_00042.ndjson`.
+
+The key does **not** include a date or run ID. Because S3 `put_object` overwrites
+an existing object with the same key, re-running the full ingest simply overwrites
+the same objects — no duplicates are created regardless of how many times you
+retry.
+
+### Re-running full ingest after a partial failure
+
+Just re-trigger the **Full Ingest** workflow:
+
+1. Go to **Actions → Full Ingest – Bundestag Data → Run workflow**.
+2. Leave `dry_run` as `false` and click **Run workflow**.
+
+The pipeline will re-fetch all pages from the API and overwrite the same S3
+objects it previously wrote. Objects that were uploaded in the failed run are
+safely overwritten.
+
+> **Tip:** If the failure was caused by rate-limiting, increase `DIP_REQUEST_DELAY`
+> (default `1.5` in the workflow) before re-triggering.
+
+### When to use the cleanup workflow
+
+The **Cleanup Raw Data** workflow should only be needed in exceptional cases, for
+example:
+
+- You want to remove data for a specific resource before testing a schema change.
+- You need to free storage after an experimental run.
+- You want a completely fresh start with no previously uploaded objects.
+
+It is **not** required to avoid duplicates on a normal re-run (idempotent writes
+handle that automatically).
+
+### Running the cleanup workflow
+
+1. Go to **Actions → Cleanup Raw Data – Delete S3 Objects → Run workflow**.
+2. Set **prefix** to the scope you want to delete:
+   - `raw/` — deletes **all** raw data.
+   - `raw/aktivitaet/` — deletes only the `aktivitaet` resource.
+3. Set **confirm** to exactly `DELETE` (case-sensitive). Any other value aborts
+   without deleting anything.
+4. Click **Run workflow** and review the log output, which lists every key before
+   deleting it.
+
+You can also run the cleanup locally:
+
+```bash
+python -m pipeline.cli cleanup-raw --prefix raw/aktivitaet/ --confirm DELETE
+```
+
+### Summary
+
+| Scenario | Recommended action |
+|---|---|
+| Full ingest failed mid-run | Re-trigger "Full Ingest" workflow – overwrites are safe |
+| Want a completely fresh start | Run "Cleanup Raw Data" workflow, then "Full Ingest" |
+| Single resource needs re-fetching | Run "Cleanup Raw Data" with `raw/<resource>/` prefix, then "Full Ingest" |

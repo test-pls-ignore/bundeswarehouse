@@ -504,6 +504,162 @@ class TestCLIApiKeyValidation(unittest.TestCase):
         self.assertEqual(result, 1)
 
 
+class TestMakeS3Key(unittest.TestCase):
+    """Tests for the deterministic _make_s3_key path generation."""
+
+    def test_key_format_includes_resource_and_batch(self):
+        """Key must contain the resource name and zero-padded batch index."""
+        from pipeline.ingest import _make_s3_key
+        key = _make_s3_key("aktivitaet", 0)
+        self.assertEqual(key, "raw/aktivitaet/batch_00000.ndjson")
+
+    def test_key_is_deterministic_across_calls(self):
+        """Same arguments must always return the same key (no timestamps)."""
+        from pipeline.ingest import _make_s3_key
+        key1 = _make_s3_key("vorgang", 42)
+        key2 = _make_s3_key("vorgang", 42)
+        self.assertEqual(key1, key2)
+
+    def test_different_batch_indices_produce_different_keys(self):
+        """Different batch indices for the same resource must produce distinct keys."""
+        from pipeline.ingest import _make_s3_key
+        key0 = _make_s3_key("drucksache", 0)
+        key1 = _make_s3_key("drucksache", 1)
+        self.assertNotEqual(key0, key1)
+        self.assertEqual(key0, "raw/drucksache/batch_00000.ndjson")
+        self.assertEqual(key1, "raw/drucksache/batch_00001.ndjson")
+
+    def test_different_resources_produce_different_keys(self):
+        """Different resources at the same batch index must produce distinct keys."""
+        from pipeline.ingest import _make_s3_key
+        key_a = _make_s3_key("vorgang", 0)
+        key_b = _make_s3_key("aktivitaet", 0)
+        self.assertNotEqual(key_a, key_b)
+
+    def test_key_does_not_contain_date(self):
+        """Key must not include a date component (would break idempotency)."""
+        from pipeline.ingest import _make_s3_key
+        import re
+        key = _make_s3_key("plenarprotokoll", 5)
+        self.assertIsNone(re.search(r"\d{4}-\d{2}-\d{2}", key))
+
+
+class TestDeletePrefix(unittest.TestCase):
+    """Tests for pipeline.storage.delete_prefix."""
+
+    def _make_paginator(self, pages):
+        """Return a mock paginator whose paginate() yields *pages*."""
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = iter(pages)
+        return mock_paginator
+
+    def test_delete_prefix_deletes_all_objects(self):
+        """delete_prefix must call delete_objects for every listed key."""
+        from pipeline.storage import delete_prefix
+
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value = self._make_paginator([
+            {"Contents": [{"Key": "raw/aktivitaet/batch_00000.ndjson"},
+                          {"Key": "raw/aktivitaet/batch_00001.ndjson"}]},
+        ])
+        mock_client.delete_objects.return_value = {"Errors": []}
+
+        count = delete_prefix(mock_client, "bucket", "raw/aktivitaet/")
+
+        mock_client.delete_objects.assert_called_once()
+        call_kwargs = mock_client.delete_objects.call_args[1]
+        keys = [o["Key"] for o in call_kwargs["Delete"]["Objects"]]
+        self.assertIn("raw/aktivitaet/batch_00000.ndjson", keys)
+        self.assertIn("raw/aktivitaet/batch_00001.ndjson", keys)
+        self.assertEqual(count, 2)
+
+    def test_delete_prefix_returns_zero_when_empty(self):
+        """delete_prefix must return 0 and not call delete_objects if prefix is empty."""
+        from pipeline.storage import delete_prefix
+
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value = self._make_paginator([
+            {"Contents": []},
+        ])
+
+        count = delete_prefix(mock_client, "bucket", "raw/empty/")
+
+        mock_client.delete_objects.assert_not_called()
+        self.assertEqual(count, 0)
+
+    def test_delete_prefix_handles_multiple_pages(self):
+        """delete_prefix must issue one delete_objects call per page of results."""
+        from pipeline.storage import delete_prefix
+
+        mock_client = MagicMock()
+        mock_client.get_paginator.return_value = self._make_paginator([
+            {"Contents": [{"Key": "raw/vorgang/batch_00000.ndjson"}]},
+            {"Contents": [{"Key": "raw/vorgang/batch_00001.ndjson"}]},
+        ])
+        mock_client.delete_objects.return_value = {"Errors": []}
+
+        count = delete_prefix(mock_client, "bucket", "raw/vorgang/")
+
+        self.assertEqual(mock_client.delete_objects.call_count, 2)
+        self.assertEqual(count, 2)
+
+
+class TestCleanupRawCLI(unittest.TestCase):
+    """Tests for the cleanup-raw CLI command."""
+
+    def setUp(self):
+        os.environ["S3_ACCESS_KEY_ID"] = "testkey"
+        os.environ["S3_SECRET_ACCESS_KEY"] = "testsecret"
+        os.environ["S3_ENDPOINT_URL"] = "http://127.0.0.1:9000"
+        os.environ["S3_BUCKET"] = "test-bucket"
+
+    def tearDown(self):
+        for var in ["S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_ENDPOINT_URL", "S3_BUCKET"]:
+            os.environ.pop(var, None)
+
+    def test_cleanup_raw_wrong_confirm_returns_1(self):
+        """cleanup-raw must return 1 if --confirm is not exactly 'DELETE'."""
+        from pipeline.cli import cmd_cleanup_raw
+        args = MagicMock()
+        args.prefix = "raw/"
+        args.confirm = "delete"  # wrong case
+        result = cmd_cleanup_raw(args)
+        self.assertEqual(result, 1)
+
+    def test_cleanup_raw_empty_confirm_returns_1(self):
+        """cleanup-raw must return 1 if --confirm is empty."""
+        from pipeline.cli import cmd_cleanup_raw
+        args = MagicMock()
+        args.prefix = "raw/"
+        args.confirm = ""
+        result = cmd_cleanup_raw(args)
+        self.assertEqual(result, 1)
+
+    def test_cleanup_raw_correct_confirm_calls_delete_prefix(self):
+        """cleanup-raw with --confirm DELETE must call delete_prefix."""
+        from pipeline.cli import cmd_cleanup_raw
+
+        args = MagicMock()
+        args.prefix = "raw/aktivitaet/"
+        args.confirm = "DELETE"
+
+        mock_client = MagicMock()
+        # Paginator returns one page with one object (so the deletion path is taken)
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = iter([
+            {"Contents": [{"Key": "raw/aktivitaet/batch_00000.ndjson"}]},
+        ])
+        mock_client.get_paginator.return_value = mock_paginator
+
+        with patch("pipeline.cli.get_s3_client", return_value=mock_client), \
+             patch("pipeline.cli.get_bucket_name", return_value="test-bucket"), \
+             patch("pipeline.cli.delete_prefix", return_value=1) as mock_dp:
+            result = cmd_cleanup_raw(args)
+
+        self.assertEqual(result, 0)
+        mock_dp.assert_called_once_with(mock_client, "test-bucket", "raw/aktivitaet/")
+
+
 if __name__ == "__main__":
     unittest.main()
 

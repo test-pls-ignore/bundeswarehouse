@@ -178,6 +178,43 @@ def download_bytes(
     return None
 
 
+def delete_prefix(client, bucket: str, prefix: str) -> int:
+    """Delete all S3 objects whose key starts with *prefix*.
+
+    Returns the number of objects deleted.
+
+    Uses the S3 list_objects_v2 / delete_objects API in batches of up to 1000
+    objects (the S3 delete_objects maximum).
+    """
+    deleted = 0
+    paginator = client.get_paginator("list_objects_v2")
+    pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+
+    for page in pages:
+        objects = page.get("Contents", [])
+        if not objects:
+            continue
+        keys = [{"Key": obj["Key"]} for obj in objects]
+        response = client.delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": keys, "Quiet": True},
+        )
+        errors = response.get("Errors", [])
+        if errors:
+            for err in errors:
+                logger.error(
+                    "Failed to delete s3://%s/%s: %s %s",
+                    bucket,
+                    err.get("Key"),
+                    err.get("Code"),
+                    err.get("Message"),
+                )
+        deleted += len(keys) - len(errors)
+        logger.info("Deleted %d objects under s3://%s/%s", len(keys), bucket, prefix)
+
+    return deleted
+
+
 def check_connection(client, bucket: str) -> bool:
     """Smoke-test the S3 connection and bucket access. Returns True on success."""
     try:

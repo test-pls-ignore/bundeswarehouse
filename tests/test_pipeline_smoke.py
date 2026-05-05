@@ -644,7 +644,9 @@ class TestCleanupRawCLI(unittest.TestCase):
         args.confirm = "DELETE"
 
         mock_client = MagicMock()
-        # Paginator returns one page with one object (so the deletion path is taken)
+        # The paginator mock is needed for cmd_cleanup_raw's own pre-listing step
+        # (it lists objects to show what will be deleted before calling delete_prefix).
+        # delete_prefix itself is mocked separately below.
         mock_paginator = MagicMock()
         mock_paginator.paginate.return_value = iter([
             {"Contents": [{"Key": "raw/aktivitaet/batch_00000.ndjson"}]},

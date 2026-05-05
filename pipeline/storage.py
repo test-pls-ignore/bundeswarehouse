@@ -210,7 +210,7 @@ def delete_prefix(client, bucket: str, prefix: str) -> int:
                     err.get("Message"),
                 )
         deleted += len(keys) - len(errors)
-        logger.info("Deleted %d objects under s3://%s/%s", len(keys), bucket, prefix)
+        logger.info("Deleted %d objects under s3://%s/%s", len(keys) - len(errors), bucket, prefix)
 
     return deleted
 

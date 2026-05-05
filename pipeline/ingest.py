@@ -9,7 +9,7 @@ Environment variables (in addition to S3_* vars):
   BUNDESTAG_API_KEY       - DIP API key
   DIP_USER_AGENT          - HTTP User-Agent header (default: bundeswarehouse/1.0 ...)
   DIP_REQUEST_DELAY       - Seconds to sleep between page requests (default: 0.5)
-  DIP_MAX_RETRIES         - Max retry attempts for transient 429/5xx errors (default: 3)
+  DIP_MAX_RETRIES         - Max retry attempts for transient 401/429/5xx errors (default: 3)
   DIP_RETRY_BACKOFF_MAX   - Maximum backoff seconds between retries (default: 60)
 """
 
@@ -206,15 +206,16 @@ def fetch_page(
                 body_snippet=body_snippet,
             )
 
-        # Retry on 429 (rate-limited) or any 5xx (server error).
-        if response.status_code == 429 or response.status_code >= 500:
+        # Retry on 401 (temporary auth/quota block), 429 (rate-limited), or any 5xx (server error).
+        if response.status_code in (401, 429) or response.status_code >= 500:
             logger.warning(
-                "Transient error for %s: status=%d, url=%r (attempt %d/%d)",
+                "Transient error for %s: status=%d, url=%r (attempt %d/%d), body_snippet=%r",
                 resource,
                 response.status_code,
                 final_url,
                 attempt + 1,
                 max_retries + 1,
+                response.text[:200],
             )
             last_exc = requests.HTTPError(response=response)
             continue
@@ -223,12 +224,13 @@ def fetch_page(
             response.raise_for_status()
         except requests.HTTPError:
             logger.error(
-                "HTTP error for %s: status=%d, url=%r, final_url=%r, content_type=%r",
+                "HTTP error for %s: status=%d, url=%r, final_url=%r, content_type=%r, body_snippet=%r",
                 resource,
                 response.status_code,
                 url,
                 final_url,
                 content_type,
+                response.text[:200],
             )
             raise
 

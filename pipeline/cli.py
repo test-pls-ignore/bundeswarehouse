@@ -13,6 +13,7 @@ Required environment variables:
 
 import argparse
 import logging
+import os
 import sys
 
 from pipeline.ingest import ChallengePageError, run_full_load, run_incremental
@@ -42,6 +43,14 @@ def cmd_check_connection(_args) -> int:
 
 def cmd_full_load(_args) -> int:
     """Run a full ingest of all Bundestag data."""
+    if not os.environ.get("BUNDESTAG_API_KEY", "").strip():
+        logger.error(
+            "BUNDESTAG_API_KEY is not set or empty. "
+            "Configure it as a repository secret and pass it via the workflow env: "
+            "BUNDESTAG_API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}"
+        )
+        return 1
+
     client = get_s3_client()
     bucket = get_bucket_name()
     ensure_bucket_exists(client, bucket)
@@ -66,6 +75,14 @@ def cmd_full_load(_args) -> int:
 
 def cmd_incremental_update(_args) -> int:
     """Run an incremental ingest, resuming from saved state."""
+    if not os.environ.get("BUNDESTAG_API_KEY", "").strip():
+        logger.error(
+            "BUNDESTAG_API_KEY is not set or empty. "
+            "Configure it as a repository secret and pass it via the workflow env: "
+            "BUNDESTAG_API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}"
+        )
+        return 1
+
     client = get_s3_client()
     bucket = get_bucket_name()
     ensure_bucket_exists(client, bucket)

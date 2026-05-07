@@ -191,15 +191,17 @@ def fetch_page(
         # pages are sometimes served with 4xx codes that would otherwise be misleading.
         if _is_challenge_response(response):
             body_snippet = response.text[:200]
+            retry_msg = "will retry" if attempt < max_retries else "retries exhausted"
             logger.warning(
                 "Challenge page detected for %s: status=%d, url=%r, final_url=%r "
-                "(attempt %d/%d); will retry. body_snippet=%r",
+                "(attempt %d/%d); %s. body_snippet=%r",
                 resource,
                 response.status_code,
                 url,
                 final_url,
                 attempt + 1,
                 max_retries + 1,
+                retry_msg,
                 body_snippet,
             )
             last_exc = ChallengePageError(

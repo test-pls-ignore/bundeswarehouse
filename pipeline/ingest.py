@@ -532,7 +532,7 @@ def ingest_resource(
                 time.sleep(request_delay)
             continue
 
-        if not docs and next_cursor:
+        if next_cursor is not None and next_cursor == cursor:
             logger.info(
                 "Stopping '%s' pagination because cursor did not advance (%r).",
                 resource,

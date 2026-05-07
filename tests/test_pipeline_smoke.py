@@ -651,6 +651,45 @@ class TestIngestResourcePagination(unittest.TestCase):
         self.assertEqual(mock_client.put_object.call_count, 1)
         self.assertNotIn("vorgang", updated_state.get("cursors", {}))
 
+    def test_incremental_dedupes_duplicate_document_ids(self):
+        """Incremental runs should dedupe duplicate IDs seen across pages."""
+        from pipeline.ingest import ingest_resource
+
+        page1 = _make_mock_response(
+            body=b'{"documents": [{"id": "1"}], "cursor": "cursor-next"}'
+        )
+        page2 = _make_mock_response(
+            body=b'{"documents": [{"id": "1"}, {"id": "2"}], "cursor": null}'
+        )
+
+        mock_client = MagicMock()
+        state = {"cursors": {}, "last_seen_update": "2026-05-01T10:00:00+00:00", "run_count": 1}
+        manifest = {"objects": []}
+
+        with patch("pipeline.ingest._make_session") as mock_make_session, \
+             patch("pipeline.ingest.time.sleep"):
+            mock_session = MagicMock()
+            mock_session.get.side_effect = [page1, page2]
+            mock_make_session.return_value = mock_session
+
+            ingest_resource(
+                "vorgang",
+                "testapikey",
+                mock_client,
+                "bucket",
+                state,
+                manifest,
+                incremental=True,
+            )
+
+        uploaded_rows = []
+        for call in mock_client.put_object.call_args_list:
+            body = call.kwargs["Body"]
+            uploaded_rows.extend(
+                json.loads(line) for line in body.decode("utf-8").strip().split("\n") if line.strip()
+            )
+        self.assertEqual([doc["id"] for doc in uploaded_rows], ["1", "2"])
+
 
 class TestCLIApiKeyValidation(unittest.TestCase):
     """Tests for early BUNDESTAG_API_KEY validation in CLI commands."""

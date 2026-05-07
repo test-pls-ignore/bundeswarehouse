@@ -105,6 +105,11 @@ To clean up leftover staging data from failed runs, use the
 | `DIP_REQUEST_DELAY` | `0.5` | Seconds to sleep between page requests. Increase to reduce the risk of triggering rate limits or WAF blocks. |
 | `DIP_MAX_RETRIES` | `3` | Maximum retry attempts for transient `429` / `5xx` responses (exponential backoff with jitter). |
 | `DIP_RETRY_BACKOFF_MAX` | `60` | Maximum backoff duration in seconds between retry attempts. |
+| `DIP_CHALLENGE_COOLDOWN_MIN` | `600` | Minimum cooldown in seconds after detecting a WAF/anti-bot challenge page before retrying. |
+| `DIP_CHALLENGE_COOLDOWN_MAX` | `1800` | Maximum cooldown in seconds after challenge detection; retry sleep is randomized between min/max. |
+| `DIP_API_KEY_TRANSPORT` | `header` | API key transport mode: `header` (Authorization) or `query` (adds `apikey` query parameter). |
+| `DIP_INCREMENTAL_OVERLAP_MINUTES` | `15` | Overlap window applied to incremental `f.aktualisiert.start` lower bound (minimum enforced: 15). |
+| `DIP_MAX_CONCURRENCY` | `1` | Declared request concurrency cap. Must stay within `1..25` per DIP guidance; pipeline executes requests single-threaded. |
 
 ---
 
@@ -157,9 +162,10 @@ of JSON. The pipeline detects this by checking:
 - Whether the final URL contains `/.enodia/challenge`.
 - Whether the response `Content-Type` is `text/html`.
 
-When detected, the pipeline raises `ChallengePageError` and **exits with a non-zero
-status code** so the failure is visible in CI / alerting. It does **not** silently
-treat the block as "no documents found".
+When detected, the pipeline applies a long cooldown (`DIP_CHALLENGE_COOLDOWN_MIN/MAX`)
+between retries to avoid hammering while blocked. If retries are exhausted, it raises
+`ChallengePageError` and **exits with a non-zero status code** so the failure is visible
+in CI / alerting. It does **not** silently treat the block as "no documents found".
 
 To reduce the likelihood of being blocked:
 
@@ -175,8 +181,20 @@ exception propagates and the run exits with a non-zero status code.  `401`
 responses are treated as transient (some gateways return `401` instead of `429`
 when rate-limiting or applying quota controls).
 
-### Incorrect stop condition
+### Pagination stop condition
 
-Pagination only stops when a **valid JSON response** is received that contains no
-documents (or no cursor). Any HTTP error, invalid JSON, or unexpected response
-causes an exception rather than silently ending pagination.
+Per DIP cursor semantics, pagination continues until either:
+
+- `cursor` is missing/empty, or
+- `cursor` repeats (no progress).
+
+`documents: []` alone does **not** end pagination if a new cursor is still present.
+Any HTTP error, invalid JSON, or unexpected response causes an exception rather than
+silently ending pagination.
+
+### Incremental overlap and dedupe
+
+Incremental fetches use `f.aktualisiert.start` and always apply at least a 15-minute
+overlap window to account for DIP’s documented indexing delay. Because overlap can
+return repeated entities, the pipeline deduplicates document IDs within each
+incremental run before upload.

@@ -144,7 +144,7 @@ def fetch_page(
     next_cursor is None when no more pages are available.
 
     Raises:
-        ChallengePageError: if the response is a WAF/anti-bot challenge page.
+        ChallengePageError: if retries are exhausted while receiving challenge pages.
         ValueError: if a non-JSON response is received from the API.
         requests.HTTPError: for unrecoverable HTTP errors after retries.
         requests.RequestException: for network-level errors after retries.
@@ -191,23 +191,25 @@ def fetch_page(
         # pages are sometimes served with 4xx codes that would otherwise be misleading.
         if _is_challenge_response(response):
             body_snippet = response.text[:200]
-            logger.error(
-                "Challenge page detected for %s: status=%d, url=%r, "
-                "final_url=%r, content_type=%r, body=%r",
+            logger.warning(
+                "Challenge page detected for %s: status=%d, url=%r, final_url=%r "
+                "(attempt %d/%d); will retry. body_snippet=%r",
                 resource,
                 response.status_code,
                 url,
                 final_url,
-                content_type,
+                attempt + 1,
+                max_retries + 1,
                 body_snippet,
             )
-            raise ChallengePageError(
+            last_exc = ChallengePageError(
                 url=url,
                 final_url=final_url,
                 status_code=response.status_code,
                 content_type=content_type,
                 body_snippet=body_snippet,
             )
+            continue
 
         # Retry on 401 (temporary auth/quota block), 429 (rate-limited), or any 5xx (server error).
         if response.status_code in (401, 429) or response.status_code >= 500:
@@ -304,7 +306,7 @@ def ingest_resource(
     Returns (updated_state, updated_manifest).
 
     Raises:
-        ChallengePageError: immediately if any page request is blocked by a challenge page.
+        ChallengePageError: if page requests remain blocked by challenge pages after retries.
         Other exceptions from fetch_page propagate after retries are exhausted.
     """
     config = _get_config()

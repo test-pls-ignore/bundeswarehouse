@@ -421,6 +421,50 @@ class TestFetchPage(unittest.TestCase):
         self.assertEqual(len(docs), 1)
         self.assertEqual(session.get.call_count, 2)
 
+    def test_retries_on_challenge_then_succeeds(self):
+        """A challenge response should be retried; success on the second attempt is returned."""
+        from pipeline.ingest import fetch_page
+
+        challenge = _make_mock_response(
+            status_code=503,
+            content_type="text/html; charset=utf-8",
+            url="https://search.dip.bundestag.de/.enodia/challenge?redirect=%2Fapi%2Fv1%2Fvorgang",
+            body=b"<html><body>challenge</body></html>",
+        )
+        body = json.dumps({"documents": [{"id": "1"}], "cursor": None}).encode()
+        success = _make_mock_response(
+            status_code=200,
+            content_type="application/json",
+            url="https://search.dip.bundestag.de/api/v1/vorgang",
+            body=body,
+        )
+        session = self._make_session_mock([challenge, success])
+
+        with patch("pipeline.ingest.time.sleep"):
+            docs, cursor = fetch_page(session, "vorgang", "testapikey", max_retries=1)
+
+        self.assertEqual(len(docs), 1)
+        self.assertIsNone(cursor)
+        self.assertEqual(session.get.call_count, 2)
+
+    def test_raises_after_all_challenge_retries_exhausted(self):
+        """After max_retries challenge responses, fetch_page must raise ChallengePageError."""
+        from pipeline.ingest import ChallengePageError, fetch_page
+
+        challenge = _make_mock_response(
+            status_code=503,
+            content_type="text/html; charset=utf-8",
+            url="https://search.dip.bundestag.de/.enodia/challenge?redirect=%2Fapi%2Fv1%2Fvorgang",
+            body=b"<html><body>challenge</body></html>",
+        )
+        session = self._make_session_mock([challenge, challenge, challenge])
+
+        with patch("pipeline.ingest.time.sleep"):
+            with self.assertRaises(ChallengePageError):
+                fetch_page(session, "vorgang", "testapikey", max_retries=2)
+
+        self.assertEqual(session.get.call_count, 3)
+
     def test_raises_after_all_401_retries_exhausted(self):
         """After max_retries 401s, fetch_page must raise (not return empty list)."""
         import requests as req_lib

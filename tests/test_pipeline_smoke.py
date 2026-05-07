@@ -447,6 +447,62 @@ class TestFetchPage(unittest.TestCase):
         self.assertIsNone(cursor)
         self.assertEqual(session.get.call_count, 2)
 
+    def test_challenge_retry_uses_cooldown_sleep(self):
+        """Challenge retries should sleep using the configured cooldown window."""
+        from pipeline.ingest import fetch_page
+
+        challenge = _make_mock_response(
+            status_code=503,
+            content_type="text/html; charset=utf-8",
+            url="https://search.dip.bundestag.de/.enodia/challenge?redirect=%2Fapi%2Fv1%2Fvorgang",
+            body=b"<html><body>challenge</body></html>",
+        )
+        body = json.dumps({"documents": [{"id": "1"}], "cursor": None}).encode()
+        success = _make_mock_response(
+            status_code=200,
+            content_type="application/json",
+            url="https://search.dip.bundestag.de/api/v1/vorgang",
+            body=body,
+        )
+        session = self._make_session_mock([challenge, success])
+
+        with patch("pipeline.ingest.time.sleep") as mock_sleep:
+            docs, cursor = fetch_page(
+                session,
+                "vorgang",
+                "testapikey",
+                max_retries=1,
+                challenge_cooldown_min=600,
+                challenge_cooldown_max=600,
+            )
+
+        self.assertEqual(len(docs), 1)
+        self.assertIsNone(cursor)
+        mock_sleep.assert_called_once_with(600.0)
+
+    def test_query_api_key_transport_uses_apikey_param(self):
+        """When configured, fetch_page should send API key as query param."""
+        from pipeline.ingest import fetch_page
+
+        resp = _make_mock_response(
+            status_code=200,
+            content_type="application/json",
+            body=b'{"documents": [], "cursor": null}',
+        )
+        session = self._make_session_mock([resp])
+
+        fetch_page(
+            session,
+            "vorgang",
+            "testapikey",
+            max_retries=0,
+            api_key_transport="query",
+        )
+
+        kwargs = session.get.call_args.kwargs
+        self.assertEqual(kwargs["params"]["apikey"], "testapikey")
+        self.assertEqual(kwargs["headers"], {})
+
     def test_raises_after_all_challenge_retries_exhausted(self):
         """After max_retries challenge responses, fetch_page must raise ChallengePageError."""
         from pipeline.ingest import ChallengePageError, fetch_page
@@ -532,6 +588,107 @@ class TestIngestResourceChallengeHandling(unittest.TestCase):
 
         # No S3 uploads should have occurred
         mock_client.put_object.assert_not_called()
+
+
+class TestIngestResourcePagination(unittest.TestCase):
+    """Tests for cursor edge cases in ingest_resource pagination logic."""
+
+    def test_stops_when_cursor_repeats(self):
+        """Pagination should stop when API returns the same cursor again."""
+        from pipeline.ingest import ingest_resource
+
+        page1 = _make_mock_response(
+            body=json.dumps({"documents": [{"id": "1"}], "cursor": "cursor-a"}).encode()
+        )
+        page2 = _make_mock_response(
+            body=json.dumps({"documents": [{"id": "2"}], "cursor": "cursor-a"}).encode()
+        )
+
+        mock_client = MagicMock()
+        state = {"cursors": {}, "last_seen_update": None, "run_count": 1}
+        manifest = {"objects": []}
+
+        with patch("pipeline.ingest._make_session") as mock_make_session, \
+             patch("pipeline.ingest.time.sleep"):
+            mock_session = MagicMock()
+            mock_session.get.side_effect = [page1, page2]
+            mock_make_session.return_value = mock_session
+
+            updated_state, _ = ingest_resource(
+                "vorgang", "testapikey", mock_client, "bucket", state, manifest
+            )
+
+        self.assertEqual(mock_session.get.call_count, 2)
+        self.assertNotIn("vorgang", updated_state.get("cursors", {}))
+        self.assertEqual(mock_client.put_object.call_count, 2)
+
+    def test_empty_documents_with_cursor_continues(self):
+        """Empty documents should not terminate if cursor advances."""
+        from pipeline.ingest import ingest_resource
+
+        page1 = _make_mock_response(
+            body=b'{"documents": [], "cursor": "cursor-next"}'
+        )
+        page2 = _make_mock_response(
+            body=b'{"documents": [{"id": "1"}], "cursor": null}'
+        )
+
+        mock_client = MagicMock()
+        state = {"cursors": {}, "last_seen_update": None, "run_count": 1}
+        manifest = {"objects": []}
+
+        with patch("pipeline.ingest._make_session") as mock_make_session, \
+             patch("pipeline.ingest.time.sleep"):
+            mock_session = MagicMock()
+            mock_session.get.side_effect = [page1, page2]
+            mock_make_session.return_value = mock_session
+
+            updated_state, _ = ingest_resource(
+                "vorgang", "testapikey", mock_client, "bucket", state, manifest
+            )
+
+        self.assertEqual(mock_session.get.call_count, 2)
+        self.assertEqual(mock_client.put_object.call_count, 1)
+        self.assertNotIn("vorgang", updated_state.get("cursors", {}))
+
+    def test_incremental_dedupes_duplicate_document_ids(self):
+        """Incremental runs should dedupe duplicate IDs seen across pages."""
+        from pipeline.ingest import ingest_resource
+
+        page1 = _make_mock_response(
+            body=b'{"documents": [{"id": "1"}], "cursor": "cursor-next"}'
+        )
+        page2 = _make_mock_response(
+            body=b'{"documents": [{"id": "1"}, {"id": "2"}], "cursor": null}'
+        )
+
+        mock_client = MagicMock()
+        state = {"cursors": {}, "last_seen_update": "2026-05-01T10:00:00+00:00", "run_count": 1}
+        manifest = {"objects": []}
+
+        with patch("pipeline.ingest._make_session") as mock_make_session, \
+             patch("pipeline.ingest.time.sleep"):
+            mock_session = MagicMock()
+            mock_session.get.side_effect = [page1, page2]
+            mock_make_session.return_value = mock_session
+
+            ingest_resource(
+                "vorgang",
+                "testapikey",
+                mock_client,
+                "bucket",
+                state,
+                manifest,
+                incremental=True,
+            )
+
+        uploaded_rows = []
+        for call in mock_client.put_object.call_args_list:
+            body = call.kwargs["Body"]
+            uploaded_rows.extend(
+                json.loads(line) for line in body.decode("utf-8").strip().split("\n") if line.strip()
+            )
+        self.assertEqual([doc["id"] for doc in uploaded_rows], ["1", "2"])
 
 
 class TestCLIApiKeyValidation(unittest.TestCase):

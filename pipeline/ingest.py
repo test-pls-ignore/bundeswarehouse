@@ -7,10 +7,15 @@ and updates the manifest and state.
 
 Environment variables (in addition to S3_* vars):
   BUNDESTAG_API_KEY       - DIP API key
+  DIP_API_KEY_TRANSPORT   - "header" (default) or "query" (apikey param)
   DIP_USER_AGENT          - HTTP User-Agent header (default: bundeswarehouse/1.0 ...)
   DIP_REQUEST_DELAY       - Seconds to sleep between page requests (default: 0.5)
   DIP_MAX_RETRIES         - Max retry attempts for transient 401/429/5xx errors (default: 3)
   DIP_RETRY_BACKOFF_MAX   - Maximum backoff seconds between retries (default: 60)
+  DIP_CHALLENGE_COOLDOWN_MIN - Minimum cooldown seconds after WAF challenge (default: 600)
+  DIP_CHALLENGE_COOLDOWN_MAX - Maximum cooldown seconds after WAF challenge (default: 1800)
+  DIP_INCREMENTAL_OVERLAP_MINUTES - Overlap window for incremental updates (default: 15, minimum: 15)
+  DIP_MAX_CONCURRENCY     - Declared request concurrency cap (default: 1, maximum: 25)
 """
 
 import json
@@ -19,8 +24,9 @@ import os
 import random
 import sys
 import time
-from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -41,6 +47,12 @@ DEFAULT_USER_AGENT = "bundeswarehouse/1.0 (+https://github.com/test-pls-ignore/b
 DEFAULT_REQUEST_DELAY = 0.5
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_BACKOFF_MAX = 60.0
+DEFAULT_CHALLENGE_COOLDOWN_MIN = 600.0
+DEFAULT_CHALLENGE_COOLDOWN_MAX = 1800.0
+DEFAULT_API_KEY_TRANSPORT = "header"
+DEFAULT_INCREMENTAL_OVERLAP_MINUTES = 15
+DEFAULT_MAX_CONCURRENCY = 1
+MAX_ALLOWED_CONCURRENCY = 25
 
 # Number of batches between periodic state+manifest checkpoints during a full load.
 CHECKPOINT_INTERVAL = 50
@@ -81,11 +93,49 @@ class ChallengePageError(RuntimeError):
 
 def _get_config() -> Dict[str, Any]:
     """Read runtime config from environment variables."""
+    api_key_transport = os.environ.get("DIP_API_KEY_TRANSPORT", DEFAULT_API_KEY_TRANSPORT).strip().lower()
+    if api_key_transport not in {"header", "query"}:
+        raise ValueError(
+            "DIP_API_KEY_TRANSPORT must be either 'header' or 'query'."
+        )
+
+    max_concurrency = int(os.environ.get("DIP_MAX_CONCURRENCY", DEFAULT_MAX_CONCURRENCY))
+    if max_concurrency < 1 or max_concurrency > MAX_ALLOWED_CONCURRENCY:
+        raise ValueError(
+            f"DIP_MAX_CONCURRENCY must be between 1 and {MAX_ALLOWED_CONCURRENCY}."
+        )
+
+    overlap_minutes = max(
+        DEFAULT_INCREMENTAL_OVERLAP_MINUTES,
+        int(
+            os.environ.get(
+                "DIP_INCREMENTAL_OVERLAP_MINUTES",
+                DEFAULT_INCREMENTAL_OVERLAP_MINUTES,
+            )
+        ),
+    )
+
+    cooldown_min = float(
+        os.environ.get("DIP_CHALLENGE_COOLDOWN_MIN", DEFAULT_CHALLENGE_COOLDOWN_MIN)
+    )
+    cooldown_max = float(
+        os.environ.get("DIP_CHALLENGE_COOLDOWN_MAX", DEFAULT_CHALLENGE_COOLDOWN_MAX)
+    )
+    if cooldown_min <= 0 or cooldown_max <= 0:
+        raise ValueError("DIP_CHALLENGE_COOLDOWN_MIN/MAX must be > 0.")
+    if cooldown_min > cooldown_max:
+        raise ValueError("DIP_CHALLENGE_COOLDOWN_MIN cannot be greater than MAX.")
+
     return {
         "user_agent": os.environ.get("DIP_USER_AGENT", DEFAULT_USER_AGENT),
         "request_delay": float(os.environ.get("DIP_REQUEST_DELAY", DEFAULT_REQUEST_DELAY)),
         "max_retries": int(os.environ.get("DIP_MAX_RETRIES", DEFAULT_MAX_RETRIES)),
         "retry_backoff_max": float(os.environ.get("DIP_RETRY_BACKOFF_MAX", DEFAULT_RETRY_BACKOFF_MAX)),
+        "challenge_cooldown_min": cooldown_min,
+        "challenge_cooldown_max": cooldown_max,
+        "api_key_transport": api_key_transport,
+        "incremental_overlap_minutes": overlap_minutes,
+        "max_concurrency": max_concurrency,
     }
 
 
@@ -112,6 +162,36 @@ def _is_challenge_response(response: requests.Response) -> bool:
     return False
 
 
+def _redact_url(url: str) -> str:
+    """Return URL with sensitive query values (e.g. apikey) redacted."""
+    if not url:
+        return url
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    redacted = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        if key.lower() == "apikey" and value:
+            redacted.append((key, "***"))
+        else:
+            redacted.append((key, value))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(redacted, doseq=True), parts.fragment)
+    )
+
+
+def _apply_incremental_overlap(updated_after: Optional[str], overlap_minutes: int) -> Optional[str]:
+    """Apply the DIP-recommended overlap window to incremental lower bounds."""
+    if not updated_after:
+        return None
+    try:
+        dt = datetime.fromisoformat(updated_after.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("Invalid last_seen_update timestamp %r, using as-is.", updated_after)
+        return updated_after
+    return (dt - timedelta(minutes=overlap_minutes)).isoformat()
+
+
 def load_api_key() -> str:
     """Load the Bundestag API key from env or fall back to api_key.txt."""
     key = os.environ.get("BUNDESTAG_API_KEY")
@@ -136,6 +216,9 @@ def fetch_page(
     updated_after: Optional[str] = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
     retry_backoff_max: float = DEFAULT_RETRY_BACKOFF_MAX,
+    challenge_cooldown_min: float = DEFAULT_CHALLENGE_COOLDOWN_MIN,
+    challenge_cooldown_max: float = DEFAULT_CHALLENGE_COOLDOWN_MAX,
+    api_key_transport: str = DEFAULT_API_KEY_TRANSPORT,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
     Fetch one page of results from the DIP API.
@@ -154,37 +237,47 @@ def fetch_page(
     if cursor:
         params["cursor"] = cursor
     if updated_after:
-        params["f.datum.start"] = updated_after
+        params["f.aktualisiert.start"] = updated_after
 
-    auth_headers = {"Authorization": f"ApiKey {api_key}"}
+    if api_key_transport == "query":
+        params["apikey"] = api_key
+        auth_headers: Dict[str, str] = {}
+    else:
+        auth_headers = {"Authorization": f"ApiKey {api_key}"}
     last_exc: Optional[Exception] = None
+    next_wait_seconds: Optional[float] = None
 
     for attempt in range(max_retries + 1):
-        if attempt > 0:
-            backoff = min(retry_backoff_max, (2 ** min(attempt, 10)) + random.uniform(0, 1))
+        if attempt > 0 and next_wait_seconds is not None:
             logger.warning(
                 "Retry %d/%d for %s after %.1fs backoff.",
                 attempt,
                 max_retries,
                 resource,
-                backoff,
+                next_wait_seconds,
             )
-            time.sleep(backoff)
+            time.sleep(next_wait_seconds)
+            next_wait_seconds = None
 
         try:
             response = session.get(url, headers=auth_headers, params=params, timeout=60)
         except requests.RequestException as exc:
             logger.error(
-                "Network error for %s (attempt %d/%d): %s",
+                "Network error for %s (attempt %d/%d, url=%r): %s",
                 resource,
                 attempt + 1,
                 max_retries + 1,
+                _redact_url(url),
                 exc,
             )
             last_exc = exc
+            next_wait_seconds = min(
+                retry_backoff_max, (2 ** min(attempt + 1, 10)) + random.uniform(0, 1)
+            )
             continue
 
-        final_url = response.url
+        final_url = _redact_url(response.url)
+        safe_url = _redact_url(url)
         content_type = response.headers.get("Content-Type", "")
 
         # Check for challenge page before inspecting the status code, because challenge
@@ -197,15 +290,24 @@ def fetch_page(
                 "(attempt %d/%d); %s. body_snippet=%r",
                 resource,
                 response.status_code,
-                url,
+                safe_url,
                 final_url,
                 attempt + 1,
                 max_retries + 1,
                 retry_msg,
                 body_snippet,
             )
+            if attempt < max_retries:
+                next_wait_seconds = random.uniform(
+                    challenge_cooldown_min, challenge_cooldown_max
+                )
+                logger.warning(
+                    "Applying WAF cooldown for %s: %.1fs before next retry.",
+                    resource,
+                    next_wait_seconds,
+                )
             last_exc = ChallengePageError(
-                url=url,
+                url=safe_url,
                 final_url=final_url,
                 status_code=response.status_code,
                 content_type=content_type,
@@ -225,6 +327,9 @@ def fetch_page(
                 response.text[:200],
             )
             last_exc = requests.HTTPError(response=response)
+            next_wait_seconds = min(
+                retry_backoff_max, (2 ** min(attempt + 1, 10)) + random.uniform(0, 1)
+            )
             continue
 
         try:
@@ -234,7 +339,7 @@ def fetch_page(
                 "HTTP error for %s: status=%d, url=%r, final_url=%r, content_type=%r, body_snippet=%r",
                 resource,
                 response.status_code,
-                url,
+                safe_url,
                 final_url,
                 content_type,
                 response.text[:200],
@@ -249,7 +354,7 @@ def fetch_page(
                 "content_type=%r, body=%r",
                 resource,
                 response.status_code,
-                url,
+                safe_url,
                 final_url,
                 content_type,
                 body_snippet,
@@ -316,8 +421,25 @@ def ingest_resource(
     request_delay = config["request_delay"]
     max_retries = config["max_retries"]
     retry_backoff_max = config["retry_backoff_max"]
+    challenge_cooldown_min = config["challenge_cooldown_min"]
+    challenge_cooldown_max = config["challenge_cooldown_max"]
+    api_key_transport = config["api_key_transport"]
+    incremental_overlap_minutes = config["incremental_overlap_minutes"]
+    max_concurrency = config["max_concurrency"]
 
-    updated_after = state.get("last_seen_update") if incremental else None
+    logger.info(
+        "DIP fetch mode: single-threaded (active request concurrency=1, configured cap=%d/%d).",
+        max_concurrency,
+        MAX_ALLOWED_CONCURRENCY,
+    )
+
+    updated_after = (
+        _apply_incremental_overlap(
+            state.get("last_seen_update"), incremental_overlap_minutes
+        )
+        if incremental
+        else None
+    )
     # Always read any saved cursor for this resource; for a fresh full load the cursor
     # will be None (cleared before the run starts), and for a resumed run it holds the
     # last confirmed position.
@@ -336,6 +458,7 @@ def ingest_resource(
         batch_index = 0
 
     total_docs = 0
+    seen_doc_ids: Set[str] = set()
 
     logger.info(
         "Ingesting resource '%s' (incremental=%s, cursor=%s, updated_after=%s).",
@@ -355,53 +478,77 @@ def ingest_resource(
             updated_after=updated_after,
             max_retries=max_retries,
             retry_backoff_max=retry_backoff_max,
+            challenge_cooldown_min=challenge_cooldown_min,
+            challenge_cooldown_max=challenge_cooldown_max,
+            api_key_transport=api_key_transport,
         )
 
-        if not docs:
-            # Only reached on a valid JSON response that contains no documents,
-            # which is the correct end-of-pagination signal.
-            logger.info("No documents returned for '%s', stopping.", resource)
-            # Clear any saved cursor so the next run starts fresh.
-            state = clear_cursor(state, resource)
-            break
+        if incremental and docs:
+            deduped_docs: List[Dict[str, Any]] = []
+            for doc in docs:
+                doc_id = doc.get("id")
+                if doc_id is None:
+                    deduped_docs.append(doc)
+                    continue
+                doc_id_key = str(doc_id)
+                if doc_id_key in seen_doc_ids:
+                    continue
+                seen_doc_ids.add(doc_id_key)
+                deduped_docs.append(doc)
+            docs = deduped_docs
 
-        # Serialise as NDJSON
-        ndjson_bytes = (
-            "\n".join(json.dumps(d, ensure_ascii=False) for d in docs) + "\n"
-        ).encode()
-        checksum = sha256_of_bytes(ndjson_bytes)
-        key = _make_s3_key(resource, batch_index, prefix=s3_prefix)
+        if docs:
+            # Serialise as NDJSON
+            ndjson_bytes = (
+                "\n".join(json.dumps(d, ensure_ascii=False) for d in docs) + "\n"
+            ).encode()
+            checksum = sha256_of_bytes(ndjson_bytes)
+            key = _make_s3_key(resource, batch_index, prefix=s3_prefix)
 
-        upload_bytes(client, bucket, key, ndjson_bytes, content_type="application/x-ndjson")
-        manifest = record_object(manifest, key, len(ndjson_bytes), checksum)
+            upload_bytes(client, bucket, key, ndjson_bytes, content_type="application/x-ndjson")
+            manifest = record_object(manifest, key, len(ndjson_bytes), checksum)
 
-        total_docs += len(docs)
-        batch_index += 1
+            total_docs += len(docs)
+            batch_index += 1
 
-        # Track newest update timestamp seen
-        for doc in docs:
-            doc_date = doc.get("aktualisiert") or doc.get("datum")
-            if doc_date and (
-                state.get("last_seen_update") is None
-                or doc_date > state["last_seen_update"]
-            ):
-                state = update_last_seen(state, doc_date)
+            # Track newest update timestamp seen
+            for doc in docs:
+                doc_date = doc.get("aktualisiert") or doc.get("datum")
+                if doc_date and (
+                    state.get("last_seen_update") is None
+                    or doc_date > state["last_seen_update"]
+                ):
+                    state = update_last_seen(state, doc_date)
 
-        # Periodic checkpoint: persist progress so the run can be resumed if interrupted.
-        # This is checked before the cursor-based exit so it fires even on the last batch.
-        if checkpoint_fn is not None and batch_index > 0 and batch_index % CHECKPOINT_INTERVAL == 0:
-            checkpoint_fn(state, manifest)
+            # Periodic checkpoint: persist progress so the run can be resumed if interrupted.
+            # This is checked before the cursor-based exit so it fires even on the last batch.
+            if checkpoint_fn is not None and batch_index > 0 and batch_index % CHECKPOINT_INTERVAL == 0:
+                checkpoint_fn(state, manifest)
 
-        if next_cursor:
+        if next_cursor and next_cursor != cursor:
             state = update_cursor(state, resource, next_cursor)
             cursor = next_cursor
-        else:
-            # All pages consumed for this resource – clear saved cursor
+            if request_delay > 0:
+                time.sleep(request_delay)
+            continue
+
+        if next_cursor is not None and next_cursor == cursor:
+            logger.info(
+                "Stopping '%s' pagination because cursor did not advance (%r).",
+                resource,
+                next_cursor,
+            )
             state = clear_cursor(state, resource)
             break
-
-        if request_delay > 0:
-            time.sleep(request_delay)
+        else:
+            logger.info(
+                "Stopping '%s' pagination (next_cursor=%r, current_cursor=%r).",
+                resource,
+                next_cursor,
+                cursor,
+            )
+            state = clear_cursor(state, resource)
+            break
 
     logger.info("Finished '%s': %d documents in %d batches.", resource, total_docs, batch_index)
     return state, manifest

@@ -52,7 +52,10 @@ export default function Home() {
       <header className="mb-12 text-center">
         <h1 className="text-4xl font-extrabold text-gray-900 mb-2">Bundestag Warehouse</h1>
         <p className="text-gray-600">Search through documents, processes, and activities</p>
-        <div className="mt-3">
+        <div className="mt-3 flex gap-4 justify-center">
+          <Link href="/ask" className="text-sm text-indigo-600 hover:underline">
+            Ask a question →
+          </Link>
           <Link href="/plenarprotokoll" className="text-sm text-orange-600 hover:underline">
             Plenarprotokoll-Browser →
           </Link>

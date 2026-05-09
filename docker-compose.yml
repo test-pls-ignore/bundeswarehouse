@@ -1,6 +1,26 @@
 name: minio
 
 services:
+  rag:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      DUCKDB_PATH: "/data/warehouse.duckdb"
+      EMBEDDINGS_PATH: "/data/embeddings.duckdb"
+    volumes:
+      - "${PWD}/warehouse.duckdb:/data/warehouse.duckdb:ro"
+      - "${PWD}/embeddings.duckdb:/data/embeddings.duckdb:ro"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"

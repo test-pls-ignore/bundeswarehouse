@@ -54,11 +54,10 @@ export default function Home() {
               <div className="grid gap-4">
                 {results.vorgaenge.map((item: any) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100">
-                    <div className="text-sm text-blue-600 font-semibold mb-1">{item.typ}</div>
+                    <div className="text-sm text-blue-600 font-semibold mb-1">{item.vorgangstyp}</div>
                     <h3 className="text-lg font-bold text-gray-900 mb-2">{item.titel}</h3>
                     <div className="text-sm text-gray-500 flex justify-between">
-                      <span>{item.vorgangstyp}</span>
-                      <span>{item.datum ? new Date(item.datum).toLocaleDateString() : ''}</span>
+                      <span>{item.datum ? new Date(item.datum).toLocaleDateString('de-DE') : ''}</span>
                     </div>
                   </div>
                 ))}
@@ -74,7 +73,7 @@ export default function Home() {
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100 group">
                     <div className="flex justify-between items-start">
                       <div>
-                        <div className="text-sm text-purple-600 font-semibold mb-1">{item.drucksachetyp} {item.nummer}</div>
+                        <div className="text-sm text-purple-600 font-semibold mb-1">{item.drucksachetyp} {item.dokumentnummer}</div>
                         <h3 className="text-lg font-bold text-gray-900 mb-2 group-hover:text-purple-700">{item.titel}</h3>
                       </div>
                       {item.pdf_url && (
@@ -95,10 +94,10 @@ export default function Home() {
               <div className="grid gap-4">
                 {results.aktivitaeten.map((item: any) => (
                   <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100">
-                    <div className="text-sm text-green-600 font-semibold mb-1">{item.art}</div>
-                    <h3 className="text-lg font-bold text-gray-900 mb-2">{item.titel}</h3>
+                    <div className="text-sm text-green-600 font-semibold mb-1">{item.aktivitaetsart}</div>
+                    <h3 className="text-lg font-bold text-gray-900 mb-2">{item.person_name}</h3>
                     <div className="text-sm text-gray-500">
-                      {item.person} • {item.datum ? new Date(item.datum).toLocaleDateString() : ''}
+                      {item.datum ? new Date(item.datum).toLocaleDateString('de-DE') : ''}
                     </div>
                   </div>
                 ))}

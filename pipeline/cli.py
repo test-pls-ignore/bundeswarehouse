@@ -20,6 +20,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 
+from analytics.materialize import materialize as run_materialize
 from pipeline.ingest import ChallengePageError, publish_full_load, run_full_load, run_incremental
 from pipeline.manifest import load_manifest, save_manifest
 from pipeline.state import load_state, mark_run_start, save_state
@@ -187,6 +188,18 @@ def cmd_incremental_update(_args) -> int:
     return 0
 
 
+def cmd_materialize(args) -> int:
+    """Materialise MinIO NDJSON data into a local DuckDB file for fast web-app queries."""
+    from analytics.materialize import DEFAULT_OUTPUT
+    output = getattr(args, "output", None) or DEFAULT_OUTPUT
+    try:
+        run_materialize(output)
+        return 0
+    except Exception as exc:
+        logger.error("Materialisation failed: %s", exc, exc_info=True)
+        return 1
+
+
 def cmd_cleanup_staging(_args) -> int:
     """Delete all objects under the staging prefix (``raw/_staging/``).
 
@@ -231,6 +244,17 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("full-load", help="Run a full ingest of all Bundestag data (staging → publish)")
     subparsers.add_parser("incremental-update", help="Run an incremental ingest from saved state")
 
+    materialize_cmd = subparsers.add_parser(
+        "materialize",
+        help="Materialise MinIO NDJSON into a local DuckDB file (warehouse.duckdb)",
+    )
+    materialize_cmd.add_argument(
+        "--output",
+        default=None,
+        metavar="PATH",
+        help="Output DuckDB file path (default: warehouse.duckdb)",
+    )
+
     subparsers.add_parser(
         "cleanup-staging",
         help="Delete all objects under raw/_staging/ (does not touch raw/current/)",
@@ -261,6 +285,7 @@ def main() -> None:
         "check-connection": cmd_check_connection,
         "full-load": cmd_full_load,
         "incremental-update": cmd_incremental_update,
+        "materialize": cmd_materialize,
         "cleanup-staging": cmd_cleanup_staging,
         "cleanup-current": cmd_cleanup_current,
     }

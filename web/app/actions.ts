@@ -1,35 +1,29 @@
 'use server'
 
-import { PrismaClient } from '@prisma/client'
+import { query } from '../lib/db'
 
-const prisma = new PrismaClient()
+export async function searchBundestag(searchQuery: string) {
+    if (!searchQuery) return { vorgaenge: [], dokumente: [], aktivitaeten: [] }
 
-export async function searchBundestag(query: string) {
-    if (!query) return { vorgaenge: [], dokumente: [], aktivitaeten: [] }
+    const pattern = `%${searchQuery}%`
 
-    const vorgaenge = await prisma.vorgang.findMany({
-        where: {
-            titel: { contains: query }
-        },
-        take: 5
-    })
-
-    // Prisma SQLite 'contains' is case-sensitive by default? 
-    // Normally yes, but let's assume basic search for now.
-
-    const dokumente = await prisma.dokument.findMany({
-        where: {
-            titel: { contains: query }
-        },
-        take: 5
-    })
-
-    const aktivitaeten = await prisma.aktivitaet.findMany({
-        where: {
-            titel: { contains: query }
-        },
-        take: 5
-    })
+    const [vorgaenge, dokumente, aktivitaeten] = await Promise.all([
+        query(
+            `SELECT id, vorgangstyp, titel, datum::VARCHAR AS datum
+             FROM vorgang WHERE titel ILIKE ? LIMIT 10`,
+            [pattern]
+        ),
+        query(
+            `SELECT id, drucksachetyp, dokumentnummer, titel, pdf_url
+             FROM drucksache WHERE titel ILIKE ? LIMIT 10`,
+            [pattern]
+        ),
+        query(
+            `SELECT id, aktivitaetsart, person_name, datum::VARCHAR AS datum
+             FROM aktivitaet WHERE person_name ILIKE ? LIMIT 10`,
+            [pattern]
+        ),
+    ])
 
     return { vorgaenge, dokumente, aktivitaeten }
 }

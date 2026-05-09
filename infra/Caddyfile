@@ -1,0 +1,36 @@
+n8n-bude.de {
+    reverse_proxy 127.0.0.1:5678
+}
+
+singen-im-hof.de, www.singen-im-hof.de {
+    root * /var/www/singen-im-hof
+    file_server
+    encode gzip
+    log {
+        output file /var/log/caddy/singen-access.log
+    }
+}
+
+# Bundeswarehouse – accessible by IP until a domain is set up
+194.13.80.192 {
+    # Generate hash: caddy hash-password --plaintext 'yourpassword'
+    basic_auth {
+        admin REDACTED
+    }
+
+    handle_path /minio/* {
+        reverse_proxy 127.0.0.1:9001 {
+            header_up Host {upstream_hostport}
+        }
+    }
+
+    handle_path /s3/* {
+        reverse_proxy 127.0.0.1:9000 {
+            header_up Host {upstream_hostport}
+        }
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3000
+    }
+}

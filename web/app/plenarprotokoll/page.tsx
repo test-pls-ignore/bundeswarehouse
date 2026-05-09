@@ -135,7 +135,7 @@ export default function PlenarprotokollBrowser() {
                   <th className="px-4 py-3">Datum</th>
                   <th className="px-4 py-3">Wahlperiode</th>
                   <th className="px-4 py-3">Bemerkung</th>
-                  <th className="px-4 py-3"></th>
+                  <th className="px-4 py-3">Protokoll</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -149,11 +149,18 @@ export default function PlenarprotokollBrowser() {
                     <td className="px-4 py-3 text-gray-600 max-w-sm truncate" title={row.sitzungsbemerkung ?? ''}>
                       {row.sitzungsbemerkung ?? ''}
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      {row.pdf_url && (
-                        <a href={row.pdf_url} target="_blank" rel="noreferrer" className="text-gray-400 hover:text-red-500">
+                    <td className="px-4 py-3">
+                      {row.pdf_url ? (
+                        <a
+                          href={row.pdf_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-red-50 text-red-600 text-xs font-semibold hover:bg-red-100 transition"
+                        >
                           PDF ↗
                         </a>
+                      ) : (
+                        <span className="text-gray-300 text-xs">—</span>
                       )}
                     </td>
                   </tr>

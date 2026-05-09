@@ -3,14 +3,13 @@
 import { useState } from 'react'
 import { searchBundestag, loadMore } from './actions'
 
-type Category = 'vorgaenge' | 'dokumente' | 'aktivitaeten' | 'plenarprotokolle'
+type Category = 'vorgaenge' | 'dokumente' | 'aktivitaeten'
 
 type Results = {
   vorgaenge: any[]
   dokumente: any[]
   aktivitaeten: any[]
-  plenarprotokolle: any[]
-  counts: { vorgaenge: number; dokumente: number; aktivitaeten: number; plenarprotokolle: number }
+  counts: { vorgaenge: number; dokumente: number; aktivitaeten: number }
 }
 
 export default function Home() {
@@ -44,7 +43,7 @@ export default function Home() {
   }
 
   const totalHits = results
-    ? results.counts.vorgaenge + results.counts.dokumente + results.counts.aktivitaeten + results.counts.plenarprotokolle
+    ? results.counts.vorgaenge + results.counts.dokumente + results.counts.aktivitaeten
     : 0
 
   return (
@@ -83,9 +82,6 @@ export default function Home() {
           </span>
           <span className="text-green-600 font-semibold">
             {results.counts.aktivitaeten.toLocaleString('de-DE')} Aktivitäten
-          </span>
-          <span className="text-orange-600 font-semibold">
-            {results.counts.plenarprotokolle.toLocaleString('de-DE')} Plenarprotokolle
           </span>
           <span className="ml-auto text-gray-400">
             {totalHits.toLocaleString('de-DE')} total matches
@@ -203,49 +199,7 @@ export default function Home() {
             </section>
           )}
 
-          {results.plenarprotokolle.length > 0 && (
-            <section>
-              <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2 flex justify-between items-baseline">
-                <span>Plenarprotokolle</span>
-                <span className="text-sm font-normal text-gray-400">
-                  {results.plenarprotokolle.length} of {results.counts.plenarprotokolle.toLocaleString('de-DE')}
-                </span>
-              </h2>
-              <div className="grid gap-4">
-                {results.plenarprotokolle.map((item: any) => (
-                  <div key={item.id} className="bg-white p-6 rounded-xl shadow-sm hover:shadow-md transition border border-gray-100 group">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <div className="text-sm text-orange-600 font-semibold mb-1">{item.dokumentnummer}</div>
-                        <h3 className="text-lg font-bold text-gray-900 mb-2 group-hover:text-orange-700">{item.titel}</h3>
-                        <div className="text-sm text-gray-500">
-                          {item.datum ? new Date(item.datum).toLocaleDateString('de-DE') : ''}
-                        </div>
-                      </div>
-                      {item.pdf_url && (
-                        <a href={item.pdf_url} target="_blank" rel="noreferrer" className="text-gray-400 hover:text-red-500 shrink-0 ml-4">
-                          PDF ↗
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {results.plenarprotokolle.length < results.counts.plenarprotokolle && (
-                <button
-                  onClick={() => handleLoadMore('plenarprotokolle')}
-                  disabled={loadingMore.plenarprotokolle}
-                  className="mt-4 w-full py-2 rounded-lg border-2 border-orange-200 text-orange-600 font-medium hover:bg-orange-50 transition disabled:opacity-50"
-                >
-                  {loadingMore.plenarprotokolle
-                    ? 'Loading...'
-                    : `Load more (${(results.counts.plenarprotokolle - results.plenarprotokolle.length).toLocaleString('de-DE')} remaining)`}
-                </button>
-              )}
-            </section>
-          )}
-
-          {results.vorgaenge.length === 0 && results.dokumente.length === 0 && results.aktivitaeten.length === 0 && results.plenarprotokolle.length === 0 && (
+          {results.vorgaenge.length === 0 && results.dokumente.length === 0 && results.aktivitaeten.length === 0 && (
             <div className="text-center text-gray-500 text-lg mt-8">
               No results found. Try a different term.
             </div>

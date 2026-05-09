@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { searchBundestag, loadMore } from './actions'
 
 type Category = 'vorgaenge' | 'dokumente' | 'aktivitaeten'
@@ -51,6 +52,11 @@ export default function Home() {
       <header className="mb-12 text-center">
         <h1 className="text-4xl font-extrabold text-gray-900 mb-2">Bundestag Warehouse</h1>
         <p className="text-gray-600">Search through documents, processes, and activities</p>
+        <div className="mt-3">
+          <Link href="/plenarprotokoll" className="text-sm text-orange-600 hover:underline">
+            Plenarprotokoll-Browser →
+          </Link>
+        </div>
       </header>
 
       <form onSubmit={handleSearch} className="w-full max-w-2xl mb-6">

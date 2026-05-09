@@ -133,8 +133,8 @@ export default function PlenarprotokollBrowser() {
                 <tr className="border-b border-gray-100 bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
                   <th className="px-4 py-3">Dokument-Nr.</th>
                   <th className="px-4 py-3">Datum</th>
-                  <th className="px-4 py-3">Wahlperiode</th>
-                  <th className="px-4 py-3">Bemerkung</th>
+                  <th className="hidden sm:table-cell px-4 py-3">Wahlperiode</th>
+                  <th className="hidden md:table-cell px-4 py-3">Bemerkung</th>
                   <th className="px-4 py-3">Protokoll</th>
                 </tr>
               </thead>
@@ -145,8 +145,8 @@ export default function PlenarprotokollBrowser() {
                     <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
                       {row.datum ? new Date(row.datum).toLocaleDateString('de-DE') : '—'}
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{row.wahlperiode ?? '—'}</td>
-                    <td className="px-4 py-3 text-gray-600 max-w-sm truncate" title={row.sitzungsbemerkung ?? ''}>
+                    <td className="hidden sm:table-cell px-4 py-3 text-gray-500">{row.wahlperiode ?? '—'}</td>
+                    <td className="hidden md:table-cell px-4 py-3 text-gray-600 max-w-sm truncate" title={row.sitzungsbemerkung ?? ''}>
                       {row.sitzungsbemerkung ?? ''}
                     </td>
                     <td className="px-4 py-3">

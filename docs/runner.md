@@ -17,7 +17,7 @@ the bundeswarehouse ingestion workflows can run there.
 
 ## 2. Runner labels
 
-All bundeswarehouse workflows target the label set `[self-hosted, vps]`.
+The ingestion workflows target the label set `[self-hosted, vps]`.
 Make sure you add **both** labels when registering the runner (step 4 below).
 
 ---
@@ -79,6 +79,9 @@ Configure these in **Settings → Secrets and variables → Actions → New repo
 | `S3_BUCKET`            | Bucket name, e.g. `bundeswarehouse`                          |
 | `BUNDESTAG_API_KEY`    | DIP Bundestag API key                                        |
 | `SECRET_UPDATER_TOKEN` | PAT with `repo` scope (used by the API key updater workflow) |
+| `VPS_HOST`             | VPS hostname or IP used by the web deploy workflow           |
+| `VPS_USER`             | SSH user used by the web deploy workflow                     |
+| `VPS_SSH_KEY`          | Private SSH key used by the web deploy workflow              |
 
 ---
 
@@ -134,16 +137,18 @@ python -m pipeline.cli check-connection
 
 ## 11. Web deployment workflow (Next.js)
 
-The repository includes `.github/workflows/web_deploy.yml` to deploy the Next.js app in two stages:
+The repository includes `.github/workflows/web_deploy.yml` to deploy the Next.js app from a
+GitHub-hosted runner:
 
 1. Build on `ubuntu-latest` (`npm ci && npm run build` in `web/`).
-2. Upload `.next` + required runtime files as an artifact.
-3. Download artifact on `[self-hosted, vps]`, install production dependencies, and restart the systemd service.
+2. Package `.next`, `public`, `package.json`, `package-lock.json`, and `next.config.ts` into a tarball.
+3. Upload the tarball to the VPS over SSH/SCP on port `2225`.
+4. Run the remote deploy script over SSH, install production dependencies, and restart the systemd service.
 
 Assumptions in the workflow:
 
 - App directory on VPS: `/home/christian/bundeswarehouse/web`
 - Service name: `bundeswarehouse-web`
-- Runner user can run `sudo systemctl restart bundeswarehouse-web`
+- SSH user from `VPS_USER` can run `sudo systemctl restart bundeswarehouse-web`
 
 If your VPS uses different paths/service names, update the `WEB_APP_DIR` and `WEB_SERVICE_NAME` env values in the workflow.

@@ -19,6 +19,10 @@ permissions:
 jobs:
   build-web:
     runs-on: ubuntu-latest
+    env:
+      WEB_APP_DIR: /home/christian/bundeswarehouse/web
+      WEB_SERVICE_NAME: bundeswarehouse-web
+      VPS_SSH_PORT: 2225
     defaults:
       run:
         working-directory: web
@@ -40,45 +44,68 @@ jobs:
       - name: Build web app
         run: npm run build
 
-      - name: Prepare deployment artifact
+      - name: Package deployment tarball
         run: |
-          rm -rf /tmp/web-deploy-artifact
-          mkdir -p /tmp/web-deploy-artifact
-          cp -a .next /tmp/web-deploy-artifact/.next
-          cp -a public /tmp/web-deploy-artifact/public
-          cp package.json /tmp/web-deploy-artifact/package.json
-          cp package-lock.json /tmp/web-deploy-artifact/package-lock.json
-          cp next.config.ts /tmp/web-deploy-artifact/next.config.ts
+          rm -f /tmp/web-deploy-artifact.tar.gz
+          tar -czf /tmp/web-deploy-artifact.tar.gz \
+            .next \
+            public \
+            package.json \
+            package-lock.json \
+            next.config.ts
 
-      - name: Upload deployment artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-deploy-artifact
-          path: /tmp/web-deploy-artifact
-          if-no-files-found: error
-
-  deploy-web:
-    runs-on: [self-hosted, vps]
-    needs: build-web
-
-    env:
-      WEB_APP_DIR: /home/christian/bundeswarehouse/web
-      WEB_SERVICE_NAME: bundeswarehouse-web
-
-    steps:
-      - name: Download deployment artifact
-        uses: actions/download-artifact@v4.3.0
-        with:
-          name: web-deploy-artifact
-          path: /tmp/web-deploy-artifact
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Deploy build artifact and restart service
+      - name: Configure SSH access
+        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
         run: |
+          set -euo pipefail
+
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_KEY"
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/web_deploy_key"
+          chmod 600 "$HOME/.ssh/web_deploy_key"
+          ssh-keyscan -p "$VPS_SSH_PORT" -H "$VPS_HOST" >> "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+
+      - name: Upload deployment tarball to VPS
+        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+
+          REMOTE_TARBALL="/tmp/web-deploy-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
+          printf '%s\n' "$REMOTE_TARBALL" > /tmp/web-deploy-remote-tarball-path
+
+          scp \
+            -i "$HOME/.ssh/web_deploy_key" \
+            -P "$VPS_SSH_PORT" \
+            /tmp/web-deploy-artifact.tar.gz \
+            "$VPS_USER@$VPS_HOST:$REMOTE_TARBALL"
+
+      - name: Deploy build artifact and restart service over SSH
+        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+
+          REMOTE_TARBALL="$(cat /tmp/web-deploy-remote-tarball-path)"
+
+          ssh \
+            -i "$HOME/.ssh/web_deploy_key" \
+            -p "$VPS_SSH_PORT" \
+            "$VPS_USER@$VPS_HOST" \
+            "WEB_APP_DIR='$WEB_APP_DIR' WEB_SERVICE_NAME='$WEB_SERVICE_NAME' DEPLOY_TARBALL='$REMOTE_TARBALL' bash -s" <<'EOF'
           set -euo pipefail
 
           if [ ! -d "$WEB_APP_DIR" ]; then
@@ -86,17 +113,26 @@ jobs:
             exit 1
           fi
 
-          find "$WEB_APP_DIR" -maxdepth 1 -type d -name '.next.new.stale.*' -mtime +7 -exec rm -rf {} +
-          find "$WEB_APP_DIR" -maxdepth 1 -type d -name 'public.new.stale.*' -mtime +7 -exec rm -rf {} +
-
-          if [ ! -d "/tmp/web-deploy-artifact/.next" ]; then
-            echo "Artifact is missing .next output." >&2
+          if [ ! -f "$DEPLOY_TARBALL" ]; then
+            echo "Deployment tarball does not exist on VPS: $DEPLOY_TARBALL" >&2
             exit 1
           fi
 
-          cp /tmp/web-deploy-artifact/package.json "$WEB_APP_DIR/package.json"
-          cp /tmp/web-deploy-artifact/package-lock.json "$WEB_APP_DIR/package-lock.json"
-          cp /tmp/web-deploy-artifact/next.config.ts "$WEB_APP_DIR/next.config.ts"
+          find "$WEB_APP_DIR" -maxdepth 1 -type d -name '.next.new.stale.*' -mtime +7 -exec rm -rf {} +
+          find "$WEB_APP_DIR" -maxdepth 1 -type d -name 'public.new.stale.*' -mtime +7 -exec rm -rf {} +
+
+          DEPLOY_TMP_DIR="/tmp/web-deploy-extract-$(date +%s)-$$"
+          mkdir -p "$DEPLOY_TMP_DIR"
+          tar -xzf "$DEPLOY_TARBALL" -C "$DEPLOY_TMP_DIR"
+
+          if [ ! -d "$DEPLOY_TMP_DIR/.next" ]; then
+            echo "Deployment tarball is missing .next output." >&2
+            exit 1
+          fi
+
+          cp "$DEPLOY_TMP_DIR/package.json" "$WEB_APP_DIR/package.json"
+          cp "$DEPLOY_TMP_DIR/package-lock.json" "$WEB_APP_DIR/package-lock.json"
+          cp "$DEPLOY_TMP_DIR/next.config.ts" "$WEB_APP_DIR/next.config.ts"
 
           cd "$WEB_APP_DIR"
           npm ci --omit=dev
@@ -107,8 +143,8 @@ jobs:
             [ -d "$WEB_APP_DIR/public.new" ] && mv "$WEB_APP_DIR/public.new" "$WEB_APP_DIR/public.new.stale.$STALE_SUFFIX"
           fi
 
-          cp -a /tmp/web-deploy-artifact/.next "$WEB_APP_DIR/.next.new"
-          cp -a /tmp/web-deploy-artifact/public "$WEB_APP_DIR/public.new"
+          cp -a "$DEPLOY_TMP_DIR/.next" "$WEB_APP_DIR/.next.new"
+          cp -a "$DEPLOY_TMP_DIR/public" "$WEB_APP_DIR/public.new"
 
           sudo systemctl stop "$WEB_SERVICE_NAME"
           rm -rf "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/public.prev"
@@ -130,5 +166,15 @@ jobs:
           fi
 
           rm -rf "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/public.prev"
+          rm -rf "$DEPLOY_TMP_DIR" "$DEPLOY_TARBALL"
           sudo systemctl show "$WEB_SERVICE_NAME" -p NRestarts
           sudo systemctl --no-pager --full status "$WEB_SERVICE_NAME"
+          EOF
+
+      - name: Clean up local SSH and tarball files
+        if: always()
+        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        run: |
+          rm -f "$HOME/.ssh/web_deploy_key"
+          rm -f /tmp/web-deploy-artifact.tar.gz
+          rm -f /tmp/web-deploy-remote-tarball-path

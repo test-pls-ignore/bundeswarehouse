@@ -74,8 +74,8 @@ jobs:
           printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/web_deploy_key"
           chmod 600 "$HOME/.ssh/web_deploy_key"
 
-          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 644 "$HOME/.ssh/known_hosts"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/web_deploy_known_hosts"
+          chmod 644 "$HOME/.ssh/web_deploy_known_hosts"
 
       - name: Upload deployment tarball to VPS
         working-directory: ${{ github.workspace }}
@@ -90,6 +90,7 @@ jobs:
 
           scp \
             -i "$HOME/.ssh/web_deploy_key" \
+            -o UserKnownHostsFile="$HOME/.ssh/web_deploy_known_hosts" \
             -P "$VPS_SSH_PORT" \
             /tmp/web-deploy-artifact.tar.gz \
             "$VPS_USER@$VPS_HOST:$REMOTE_TARBALL"
@@ -106,6 +107,7 @@ jobs:
 
           ssh \
             -i "$HOME/.ssh/web_deploy_key" \
+            -o UserKnownHostsFile="$HOME/.ssh/web_deploy_known_hosts" \
             -p "$VPS_SSH_PORT" \
             "$VPS_USER@$VPS_HOST" \
             bash -s -- "$WEB_APP_DIR" "$WEB_SERVICE_NAME" "$REMOTE_TARBALL" <<'EOF'
@@ -142,18 +144,18 @@ jobs:
                   path_parts = [part for part in normalized.split("/") if part not in ("", ".")]
 
                   if member.issym() or member.islnk():
-                      raise SystemExit(f"Deployment tarball contains a link entry: {member.name}")
+                      raise SystemExit(f"Validation failed: deployment tarball contains a link entry: {member.name}")
 
                   if not (member.isdir() or member.isreg()):
-                      raise SystemExit(f"Deployment tarball contains an unsupported entry type: {member.name}")
+                      raise SystemExit(f"Validation failed: deployment tarball contains an unsupported entry type: {member.name}")
 
                   if member.name.startswith("/") or any(part == ".." for part in path_parts):
-                      raise SystemExit(f"Deployment tarball contains an unsafe path: {member.name}")
+                      raise SystemExit(f"Validation failed: deployment tarball contains an unsafe path: {member.name}")
 
                   if normalized not in allowed_exact and not any(
                       normalized.startswith(prefix) for prefix in allowed_prefixes
                   ):
-                      raise SystemExit(f"Deployment tarball contains an unexpected path: {member.name}")
+                      raise SystemExit(f"Validation failed: deployment tarball contains an unexpected path: {member.name}")
           PY
 
           DEPLOY_TMP_DIR="$(mktemp -d /tmp/web-deploy-extract.XXXXXX)"
@@ -214,5 +216,6 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           rm -f "$HOME/.ssh/web_deploy_key"
+          rm -f "$HOME/.ssh/web_deploy_known_hosts"
           rm -f /tmp/web-deploy-artifact.tar.gz
           rm -f /tmp/web-deploy-remote-tarball-path

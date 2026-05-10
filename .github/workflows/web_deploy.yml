@@ -67,19 +67,14 @@ jobs:
           test -n "$VPS_HOST"
           test -n "$VPS_USER"
           test -n "$VPS_SSH_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
 
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
           printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/web_deploy_key"
           chmod 600 "$HOME/.ssh/web_deploy_key"
 
-          if [ -n "${VPS_KNOWN_HOSTS:-}" ]; then
-            printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          else
-            echo "VPS_KNOWN_HOSTS secret not set; falling back to ssh-keyscan trust-on-first-use." >&2
-            ssh-keyscan -p "$VPS_SSH_PORT" -H "$VPS_HOST" > "$HOME/.ssh/known_hosts"
-          fi
-
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 644 "$HOME/.ssh/known_hosts"
 
       - name: Upload deployment tarball to VPS
@@ -135,6 +130,13 @@ jobs:
 
           DEPLOY_TMP_DIR="$(mktemp -d /tmp/web-deploy-extract.XXXXXX)"
           while IFS= read -r TAR_ENTRY; do
+            case "$TAR_ENTRY" in
+              /*|../*|*/../*|*/..|..)
+                echo "Deployment tarball contains an unsafe path: $TAR_ENTRY" >&2
+                exit 1
+                ;;
+            esac
+
             case "$TAR_ENTRY" in
               .next|.next/*|public|public/*|package.json|package-lock.json|next.config.ts)
                 ;;

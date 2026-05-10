@@ -82,7 +82,7 @@ Configure these in **Settings → Secrets and variables → Actions → New repo
 | `VPS_HOST`             | VPS hostname or IP used by the web deploy workflow           |
 | `VPS_USER`             | SSH user used by the web deploy workflow                     |
 | `VPS_SSH_KEY`          | Private SSH key used by the web deploy workflow              |
-| `VPS_KNOWN_HOSTS`      | Optional pre-verified `known_hosts` entry for the VPS SSH key |
+| `VPS_KNOWN_HOSTS`      | Pre-verified `known_hosts` entry for the VPS SSH host key     |
 
 ---
 
@@ -133,8 +133,8 @@ python -m pipeline.cli check-connection
 - Never commit credentials to git. Use `.env` locally and GitHub Secrets in CI.
 - The runner process should run as a dedicated non-root user.
 - Regularly rotate MinIO credentials and update the GitHub Secrets accordingly.
-- Prefer storing the VPS SSH host key in `VPS_KNOWN_HOSTS` so the web deploy workflow can verify
-  the server key without relying on trust-on-first-use.
+- Store the VPS SSH host key in `VPS_KNOWN_HOSTS` so the web deploy workflow can verify the
+  server key before connecting.
 
 ---
 

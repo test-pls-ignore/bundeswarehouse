@@ -13,6 +13,9 @@ concurrency:
   group: web-deploy-production
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build-web:
     runs-on: ubuntu-latest
@@ -73,8 +76,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: npm
-          cache-dependency-path: /tmp/web-deploy-artifact/package-lock.json
 
       - name: Deploy build artifact and restart service
         run: |
@@ -94,15 +95,17 @@ jobs:
           cp /tmp/web-deploy-artifact/package-lock.json "$WEB_APP_DIR/package-lock.json"
           cp /tmp/web-deploy-artifact/next.config.ts "$WEB_APP_DIR/next.config.ts"
 
-          rm -rf "$WEB_APP_DIR/.next"
-          rm -rf "$WEB_APP_DIR/public"
-          cp -a /tmp/web-deploy-artifact/.next "$WEB_APP_DIR/.next"
-          cp -a /tmp/web-deploy-artifact/public "$WEB_APP_DIR/public"
-
           cd "$WEB_APP_DIR"
           npm ci --omit=dev
 
-          sudo systemctl restart "$WEB_SERVICE_NAME"
+          rm -rf "$WEB_APP_DIR/.next.new" "$WEB_APP_DIR/public.new"
+          cp -a /tmp/web-deploy-artifact/.next "$WEB_APP_DIR/.next.new"
+          cp -a /tmp/web-deploy-artifact/public "$WEB_APP_DIR/public.new"
+
+          sudo systemctl stop "$WEB_SERVICE_NAME"
+          rm -rf "$WEB_APP_DIR/.next" "$WEB_APP_DIR/public"
+          mv "$WEB_APP_DIR/.next.new" "$WEB_APP_DIR/.next"
+          mv "$WEB_APP_DIR/public.new" "$WEB_APP_DIR/public"
+          sudo systemctl start "$WEB_SERVICE_NAME"
           sudo systemctl show "$WEB_SERVICE_NAME" -p NRestarts
           sudo systemctl --no-pager --full status "$WEB_SERVICE_NAME"
-

@@ -86,7 +86,8 @@ jobs:
             exit 1
           fi
 
-          rm -rf "$WEB_APP_DIR"/.next.new.stale.* "$WEB_APP_DIR"/public.new.stale.*
+          find "$WEB_APP_DIR" -maxdepth 1 -type d -name '.next.new.stale.*' -mtime +7 -exec rm -rf {} +
+          find "$WEB_APP_DIR" -maxdepth 1 -type d -name 'public.new.stale.*' -mtime +7 -exec rm -rf {} +
 
           if [ ! -d "/tmp/web-deploy-artifact/.next" ]; then
             echo "Artifact is missing .next output." >&2
@@ -121,7 +122,10 @@ jobs:
             rm -rf "$WEB_APP_DIR/.next" "$WEB_APP_DIR/public"
             [ -d "$WEB_APP_DIR/.next.prev" ] && mv "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/.next"
             [ -d "$WEB_APP_DIR/public.prev" ] && mv "$WEB_APP_DIR/public.prev" "$WEB_APP_DIR/public"
-            sudo systemctl start "$WEB_SERVICE_NAME" || true
+            if ! sudo systemctl start "$WEB_SERVICE_NAME"; then
+              echo "Rollback restart also failed for $WEB_SERVICE_NAME." >&2
+              sudo systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
+            fi
             exit 1
           fi
 

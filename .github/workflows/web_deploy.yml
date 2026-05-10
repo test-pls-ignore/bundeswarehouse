@@ -60,6 +60,7 @@ jobs:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
 
@@ -71,7 +72,14 @@ jobs:
           chmod 700 "$HOME/.ssh"
           printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/web_deploy_key"
           chmod 600 "$HOME/.ssh/web_deploy_key"
-          ssh-keyscan -p "$VPS_SSH_PORT" -H "$VPS_HOST" >> "$HOME/.ssh/known_hosts"
+
+          if [ -n "${VPS_KNOWN_HOSTS:-}" ]; then
+            printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          else
+            echo "VPS_KNOWN_HOSTS secret not set; falling back to ssh-keyscan trust-on-first-use." >&2
+            ssh-keyscan -p "$VPS_SSH_PORT" -H "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+          fi
+
           chmod 644 "$HOME/.ssh/known_hosts"
 
       - name: Upload deployment tarball to VPS
@@ -126,7 +134,21 @@ jobs:
           find "$WEB_APP_DIR" -maxdepth 1 -type d -name 'public.new.stale.*' -mtime +7 -exec rm -rf {} +
 
           DEPLOY_TMP_DIR="$(mktemp -d /tmp/web-deploy-extract.XXXXXX)"
-          tar -xzf "$DEPLOY_TARBALL" -C "$DEPLOY_TMP_DIR"
+          while IFS= read -r TAR_ENTRY; do
+            case "$TAR_ENTRY" in
+              .next|.next/*|public|public/*|package.json|package-lock.json|next.config.ts)
+                ;;
+              *)
+                echo "Deployment tarball contains an unexpected path: $TAR_ENTRY" >&2
+                exit 1
+                ;;
+            esac
+          done < <(tar -tzf "$DEPLOY_TARBALL")
+
+          tar -xzf "$DEPLOY_TARBALL" \
+            --no-same-owner \
+            --no-same-permissions \
+            -C "$DEPLOY_TMP_DIR"
 
           if [ ! -d "$DEPLOY_TMP_DIR/.next" ]; then
             echo "Deployment tarball is missing .next output." >&2

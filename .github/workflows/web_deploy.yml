@@ -55,7 +55,7 @@ jobs:
             next.config.ts
 
       - name: Configure SSH access
-        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        working-directory: ${{ github.workspace }}
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -75,7 +75,7 @@ jobs:
           chmod 644 "$HOME/.ssh/known_hosts"
 
       - name: Upload deployment tarball to VPS
-        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        working-directory: ${{ github.workspace }}
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -92,7 +92,7 @@ jobs:
             "$VPS_USER@$VPS_HOST:$REMOTE_TARBALL"
 
       - name: Deploy build artifact and restart service over SSH
-        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        working-directory: ${{ github.workspace }}
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -105,8 +105,12 @@ jobs:
             -i "$HOME/.ssh/web_deploy_key" \
             -p "$VPS_SSH_PORT" \
             "$VPS_USER@$VPS_HOST" \
-            "WEB_APP_DIR='$WEB_APP_DIR' WEB_SERVICE_NAME='$WEB_SERVICE_NAME' DEPLOY_TARBALL='$REMOTE_TARBALL' bash -s" <<'EOF'
+            bash -s -- "$WEB_APP_DIR" "$WEB_SERVICE_NAME" "$REMOTE_TARBALL" <<'EOF'
           set -euo pipefail
+
+          WEB_APP_DIR="$1"
+          WEB_SERVICE_NAME="$2"
+          DEPLOY_TARBALL="$3"
 
           if [ ! -d "$WEB_APP_DIR" ]; then
             echo "Target web app directory does not exist: $WEB_APP_DIR" >&2
@@ -121,8 +125,7 @@ jobs:
           find "$WEB_APP_DIR" -maxdepth 1 -type d -name '.next.new.stale.*' -mtime +7 -exec rm -rf {} +
           find "$WEB_APP_DIR" -maxdepth 1 -type d -name 'public.new.stale.*' -mtime +7 -exec rm -rf {} +
 
-          DEPLOY_TMP_DIR="/tmp/web-deploy-extract-$(date +%s)-$$"
-          mkdir -p "$DEPLOY_TMP_DIR"
+          DEPLOY_TMP_DIR="$(mktemp -d /tmp/web-deploy-extract.XXXXXX)"
           tar -xzf "$DEPLOY_TARBALL" -C "$DEPLOY_TMP_DIR"
 
           if [ ! -d "$DEPLOY_TMP_DIR/.next" ]; then
@@ -173,7 +176,7 @@ jobs:
 
       - name: Clean up local SSH and tarball files
         if: always()
-        working-directory: /home/runner/work/bundeswarehouse/bundeswarehouse
+        working-directory: ${{ github.workspace }}
         run: |
           rm -f "$HOME/.ssh/web_deploy_key"
           rm -f /tmp/web-deploy-artifact.tar.gz

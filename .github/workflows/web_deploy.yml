@@ -128,26 +128,30 @@ jobs:
           find "$WEB_APP_DIR" -maxdepth 1 -type d -name '.next.new.stale.*' -mtime +7 -exec rm -rf {} +
           find "$WEB_APP_DIR" -maxdepth 1 -type d -name 'public.new.stale.*' -mtime +7 -exec rm -rf {} +
 
-          while IFS= read -r TAR_ENTRY; do
-            case "$TAR_ENTRY" in
-              /*|../*|./../*|./..|*/../*|*/..|..)
-                echo "Deployment tarball contains an unsafe path: $TAR_ENTRY" >&2
-                exit 1
-                ;;
-            esac
+          python3 - "$DEPLOY_TARBALL" <<'PY'
+          import posixpath
+          import sys
+          import tarfile
 
-            case "$TAR_ENTRY" in
-              .next|.next/*|public|public/*|package.json|package-lock.json|next.config.ts)
-                ;;
-              *)
-                echo "Deployment tarball contains an unexpected path: $TAR_ENTRY" >&2
-                exit 1
-                ;;
-            esac
-          done < <(tar -tzf "$DEPLOY_TARBALL")
+          allowed_exact = {".next", "public", "package.json", "package-lock.json", "next.config.ts"}
+          allowed_prefixes = (".next/", "public/")
+
+          with tarfile.open(sys.argv[1], "r:gz") as tarball:
+              for member in tarball.getmembers():
+                  normalized = posixpath.normpath(member.name)
+
+                  if member.name.startswith("/") or normalized == ".." or normalized.startswith("../"):
+                      raise SystemExit(f"Deployment tarball contains an unsafe path: {member.name}")
+
+                  if normalized not in allowed_exact and not any(
+                      normalized.startswith(prefix) for prefix in allowed_prefixes
+                  ):
+                      raise SystemExit(f"Deployment tarball contains an unexpected path: {member.name}")
+          PY
 
           DEPLOY_TMP_DIR="$(mktemp -d /tmp/web-deploy-extract.XXXXXX)"
           tar -xzf "$DEPLOY_TARBALL" \
+            --no-absolute-names \
             --no-same-owner \
             --no-same-permissions \
             -C "$DEPLOY_TMP_DIR"

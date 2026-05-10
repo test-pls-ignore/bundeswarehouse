@@ -1,0 +1,134 @@
+name: Web Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "web/**"
+      - ".github/workflows/web_deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: web-deploy-production
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web app
+        run: npm run build
+
+      - name: Prepare deployment artifact
+        run: |
+          rm -rf /tmp/web-deploy-artifact
+          mkdir -p /tmp/web-deploy-artifact
+          cp -a .next /tmp/web-deploy-artifact/.next
+          cp -a public /tmp/web-deploy-artifact/public
+          cp package.json /tmp/web-deploy-artifact/package.json
+          cp package-lock.json /tmp/web-deploy-artifact/package-lock.json
+          cp next.config.ts /tmp/web-deploy-artifact/next.config.ts
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-deploy-artifact
+          path: /tmp/web-deploy-artifact
+          if-no-files-found: error
+
+  deploy-web:
+    runs-on: [self-hosted, vps]
+    needs: build-web
+
+    env:
+      WEB_APP_DIR: /home/christian/bundeswarehouse/web
+      WEB_SERVICE_NAME: bundeswarehouse-web
+
+    steps:
+      - name: Download deployment artifact
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: web-deploy-artifact
+          path: /tmp/web-deploy-artifact
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Deploy build artifact and restart service
+        run: |
+          set -euo pipefail
+
+          if [ ! -d "$WEB_APP_DIR" ]; then
+            echo "Target web app directory does not exist: $WEB_APP_DIR" >&2
+            exit 1
+          fi
+
+          find "$WEB_APP_DIR" -maxdepth 1 -type d -name '.next.new.stale.*' -mtime +7 -exec rm -rf {} +
+          find "$WEB_APP_DIR" -maxdepth 1 -type d -name 'public.new.stale.*' -mtime +7 -exec rm -rf {} +
+
+          if [ ! -d "/tmp/web-deploy-artifact/.next" ]; then
+            echo "Artifact is missing .next output." >&2
+            exit 1
+          fi
+
+          cp /tmp/web-deploy-artifact/package.json "$WEB_APP_DIR/package.json"
+          cp /tmp/web-deploy-artifact/package-lock.json "$WEB_APP_DIR/package-lock.json"
+          cp /tmp/web-deploy-artifact/next.config.ts "$WEB_APP_DIR/next.config.ts"
+
+          cd "$WEB_APP_DIR"
+          npm ci --omit=dev
+
+          if [ -d "$WEB_APP_DIR/.next.new" ] || [ -d "$WEB_APP_DIR/public.new" ]; then
+            STALE_SUFFIX="$(date +%s)"
+            [ -d "$WEB_APP_DIR/.next.new" ] && mv "$WEB_APP_DIR/.next.new" "$WEB_APP_DIR/.next.new.stale.$STALE_SUFFIX"
+            [ -d "$WEB_APP_DIR/public.new" ] && mv "$WEB_APP_DIR/public.new" "$WEB_APP_DIR/public.new.stale.$STALE_SUFFIX"
+          fi
+
+          cp -a /tmp/web-deploy-artifact/.next "$WEB_APP_DIR/.next.new"
+          cp -a /tmp/web-deploy-artifact/public "$WEB_APP_DIR/public.new"
+
+          sudo systemctl stop "$WEB_SERVICE_NAME"
+          rm -rf "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/public.prev"
+          [ -d "$WEB_APP_DIR/.next" ] && mv "$WEB_APP_DIR/.next" "$WEB_APP_DIR/.next.prev"
+          [ -d "$WEB_APP_DIR/public" ] && mv "$WEB_APP_DIR/public" "$WEB_APP_DIR/public.prev"
+          mv "$WEB_APP_DIR/.next.new" "$WEB_APP_DIR/.next"
+          mv "$WEB_APP_DIR/public.new" "$WEB_APP_DIR/public"
+
+          if ! sudo systemctl start "$WEB_SERVICE_NAME"; then
+            echo "Failed to start $WEB_SERVICE_NAME. Rolling back previous web assets..." >&2
+            rm -rf "$WEB_APP_DIR/.next" "$WEB_APP_DIR/public"
+            [ -d "$WEB_APP_DIR/.next.prev" ] && mv "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/.next"
+            [ -d "$WEB_APP_DIR/public.prev" ] && mv "$WEB_APP_DIR/public.prev" "$WEB_APP_DIR/public"
+            if ! sudo systemctl start "$WEB_SERVICE_NAME"; then
+              echo "Rollback restart also failed for $WEB_SERVICE_NAME." >&2
+              sudo systemctl --no-pager --full status "$WEB_SERVICE_NAME" || true
+            fi
+            exit 1
+          fi
+
+          rm -rf "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/public.prev"
+          sudo systemctl show "$WEB_SERVICE_NAME" -p NRestarts
+          sudo systemctl --no-pager --full status "$WEB_SERVICE_NAME"

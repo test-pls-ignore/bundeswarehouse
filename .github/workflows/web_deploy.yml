@@ -86,6 +86,8 @@ jobs:
             exit 1
           fi
 
+          rm -rf "$WEB_APP_DIR"/.next.new.stale.* "$WEB_APP_DIR"/public.new.stale.*
+
           if [ ! -d "/tmp/web-deploy-artifact/.next" ]; then
             echo "Artifact is missing .next output." >&2
             exit 1

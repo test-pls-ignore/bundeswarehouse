@@ -139,8 +139,15 @@ jobs:
           with tarfile.open(sys.argv[1], "r:gz") as tarball:
               for member in tarball.getmembers():
                   normalized = posixpath.normpath(member.name)
+                  path_parts = [part for part in normalized.split("/") if part not in ("", ".")]
 
-                  if member.name.startswith("/") or normalized == ".." or normalized.startswith("../"):
+                  if member.issym() or member.islnk():
+                      raise SystemExit(f"Deployment tarball contains a link entry: {member.name}")
+
+                  if not (member.isdir() or member.isreg()):
+                      raise SystemExit(f"Deployment tarball contains an unsupported entry type: {member.name}")
+
+                  if member.name.startswith("/") or any(part == ".." for part in path_parts):
                       raise SystemExit(f"Deployment tarball contains an unsafe path: {member.name}")
 
                   if normalized not in allowed_exact and not any(

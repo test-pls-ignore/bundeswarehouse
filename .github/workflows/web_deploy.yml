@@ -159,6 +159,7 @@ jobs:
           PY
 
           DEPLOY_TMP_DIR="$(mktemp -d /tmp/web-deploy-extract.XXXXXX)"
+          trap 'rm -rf "$DEPLOY_TMP_DIR"' EXIT
           tar -xzf "$DEPLOY_TARBALL" \
             --no-absolute-names \
             --no-same-owner \
@@ -207,6 +208,7 @@ jobs:
 
           rm -rf "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/public.prev"
           rm -rf "$DEPLOY_TMP_DIR" "$DEPLOY_TARBALL"
+          trap - EXIT
           sudo systemctl show "$WEB_SERVICE_NAME" -p NRestarts
           sudo systemctl --no-pager --full status "$WEB_SERVICE_NAME"
           EOF
@@ -215,7 +217,12 @@ jobs:
         if: always()
         working-directory: ${{ github.workspace }}
         run: |
-          rm -f "$HOME/.ssh/web_deploy_key"
+          if command -v shred >/dev/null 2>&1; then
+            shred -u "$HOME/.ssh/web_deploy_key" 2>/dev/null || rm -f "$HOME/.ssh/web_deploy_key"
+          else
+            rm -f "$HOME/.ssh/web_deploy_key"
+          fi
+
           rm -f "$HOME/.ssh/web_deploy_known_hosts"
           rm -f /tmp/web-deploy-artifact.tar.gz
           rm -f /tmp/web-deploy-remote-tarball-path

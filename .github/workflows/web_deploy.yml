@@ -98,14 +98,31 @@ jobs:
           cd "$WEB_APP_DIR"
           npm ci --omit=dev
 
-          rm -rf "$WEB_APP_DIR/.next.new" "$WEB_APP_DIR/public.new"
+          if [ -d "$WEB_APP_DIR/.next.new" ] || [ -d "$WEB_APP_DIR/public.new" ]; then
+            STALE_SUFFIX="$(date +%s)"
+            [ -d "$WEB_APP_DIR/.next.new" ] && mv "$WEB_APP_DIR/.next.new" "$WEB_APP_DIR/.next.new.stale.$STALE_SUFFIX"
+            [ -d "$WEB_APP_DIR/public.new" ] && mv "$WEB_APP_DIR/public.new" "$WEB_APP_DIR/public.new.stale.$STALE_SUFFIX"
+          fi
+
           cp -a /tmp/web-deploy-artifact/.next "$WEB_APP_DIR/.next.new"
           cp -a /tmp/web-deploy-artifact/public "$WEB_APP_DIR/public.new"
 
           sudo systemctl stop "$WEB_SERVICE_NAME"
-          rm -rf "$WEB_APP_DIR/.next" "$WEB_APP_DIR/public"
+          rm -rf "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/public.prev"
+          [ -d "$WEB_APP_DIR/.next" ] && mv "$WEB_APP_DIR/.next" "$WEB_APP_DIR/.next.prev"
+          [ -d "$WEB_APP_DIR/public" ] && mv "$WEB_APP_DIR/public" "$WEB_APP_DIR/public.prev"
           mv "$WEB_APP_DIR/.next.new" "$WEB_APP_DIR/.next"
           mv "$WEB_APP_DIR/public.new" "$WEB_APP_DIR/public"
-          sudo systemctl start "$WEB_SERVICE_NAME"
+
+          if ! sudo systemctl start "$WEB_SERVICE_NAME"; then
+            echo "Failed to start $WEB_SERVICE_NAME. Rolling back previous web assets..." >&2
+            rm -rf "$WEB_APP_DIR/.next" "$WEB_APP_DIR/public"
+            [ -d "$WEB_APP_DIR/.next.prev" ] && mv "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/.next"
+            [ -d "$WEB_APP_DIR/public.prev" ] && mv "$WEB_APP_DIR/public.prev" "$WEB_APP_DIR/public"
+            sudo systemctl start "$WEB_SERVICE_NAME" || true
+            exit 1
+          fi
+
+          rm -rf "$WEB_APP_DIR/.next.prev" "$WEB_APP_DIR/public.prev"
           sudo systemctl show "$WEB_SERVICE_NAME" -p NRestarts
           sudo systemctl --no-pager --full status "$WEB_SERVICE_NAME"

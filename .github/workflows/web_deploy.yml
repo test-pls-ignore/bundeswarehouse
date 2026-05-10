@@ -86,7 +86,7 @@ jobs:
           set -euo pipefail
 
           REMOTE_TARBALL="/tmp/web-deploy-artifact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar.gz"
-          printf '%s\n' "$REMOTE_TARBALL" > /tmp/web-deploy-remote-tarball-path
+          printf 'REMOTE_TARBALL=%s\n' "$REMOTE_TARBALL" >> "$GITHUB_ENV"
 
           scp \
             -i "$HOME/.ssh/web_deploy_key" \
@@ -102,8 +102,6 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-
-          REMOTE_TARBALL="$(cat /tmp/web-deploy-remote-tarball-path)"
 
           ssh \
             -i "$HOME/.ssh/web_deploy_key" \
@@ -149,7 +147,7 @@ jobs:
                   if not (member.isdir() or member.isreg()):
                       raise SystemExit(f"Validation failed: deployment tarball contains an unsupported entry type: {member.name}")
 
-                  if member.name.startswith("/") or any(part == ".." for part in path_parts):
+                  if normalized.startswith("/") or any(part == ".." for part in path_parts):
                       raise SystemExit(f"Validation failed: deployment tarball contains an unsafe path: {member.name}")
 
                   if normalized not in allowed_exact and not any(
@@ -225,4 +223,3 @@ jobs:
 
           rm -f "$HOME/.ssh/web_deploy_known_hosts"
           rm -f /tmp/web-deploy-artifact.tar.gz
-          rm -f /tmp/web-deploy-remote-tarball-path

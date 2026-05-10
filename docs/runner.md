@@ -129,3 +129,21 @@ python -m pipeline.cli check-connection
 - Never commit credentials to git. Use `.env` locally and GitHub Secrets in CI.
 - The runner process should run as a dedicated non-root user.
 - Regularly rotate MinIO credentials and update the GitHub Secrets accordingly.
+
+---
+
+## 11. Web deployment workflow (Next.js)
+
+The repository includes `.github/workflows/web_deploy.yml` to deploy the Next.js app in two stages:
+
+1. Build on `ubuntu-latest` (`npm ci && npm run build` in `web/`).
+2. Upload `.next` + required runtime files as an artifact.
+3. Download artifact on `[self-hosted, vps]`, install production dependencies, and restart the systemd service.
+
+Assumptions in the workflow:
+
+- App directory on VPS: `/home/christian/bundeswarehouse/web`
+- Service name: `bundeswarehouse-web`
+- Runner user can run `sudo systemctl restart bundeswarehouse-web`
+
+If your VPS uses different paths/service names, update the `WEB_APP_DIR` and `WEB_SERVICE_NAME` env values in the workflow.

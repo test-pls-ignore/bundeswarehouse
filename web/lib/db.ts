@@ -1,4 +1,4 @@
-import { DuckDBInstance } from "@duckdb/node-api";
+import { DuckDBInstance, DuckDBValue } from "@duckdb/node-api";
 import path from "path";
 
 const DB_PATH =
@@ -22,7 +22,7 @@ export async function query<
   const instance = await getInstance();
   const conn = await instance.connect();
   try {
-    const reader = await conn.runAndReadAll(sql, params.length ? params : undefined);
+    const reader = await conn.runAndReadAll(sql, params.length ? (params as DuckDBValue[]) : undefined);
     return reader.getRowObjects() as T[];
   } finally {
     conn.closeSync();

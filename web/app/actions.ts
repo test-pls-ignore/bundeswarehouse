@@ -18,12 +18,43 @@ export type ContentMatch = {
     snippet: string
 }
 
+type VorgangItem = {
+    id: string
+    vorgangstyp: string
+    titel: string
+    datum: string | null
+}
+
+type DokumentItem = {
+    id: string
+    drucksachetyp: string
+    dokumentnummer: string
+    titel: string
+    pdf_url: string | null
+}
+
+type AktivitaetItem = {
+    id: string
+    aktivitaetsart: string
+    person_name: string
+    datum: string | null
+}
+
 type ContentSearchResult = {
     matches: ContentMatch[]
     ragUnavailable: boolean
 }
 
-export async function searchBundestag(searchQuery: string, wahlperiode?: number) {
+type SearchResults = {
+    vorgaenge: VorgangItem[]
+    dokumente: DokumentItem[]
+    aktivitaeten: AktivitaetItem[]
+    contentMatches: ContentMatch[]
+    ragUnavailable: boolean
+    counts: { vorgaenge: number; dokumente: number; aktivitaeten: number; contentMatches: number }
+}
+
+export async function searchBundestag(searchQuery: string, wahlperiode?: number): Promise<SearchResults> {
     if (!searchQuery) return {
         vorgaenge: [], dokumente: [], aktivitaeten: [],
         contentMatches: [],
@@ -37,17 +68,17 @@ export async function searchBundestag(searchQuery: string, wahlperiode?: number)
     const contentSearchPromise = searchContentMatches(searchQuery, wahlperiode)
 
     const [vorgaenge, dokumente, aktivitaeten, countV, countD, countA, contentResult] = await Promise.all([
-        query(
+        query<VorgangItem>(
             `SELECT id, vorgangstyp, titel, datum::VARCHAR AS datum
              FROM vorgang WHERE titel ILIKE ?${vWhere} LIMIT ${PAGE_SIZE}`,
             vParams
         ),
-        query(
+        query<DokumentItem>(
             `SELECT id, drucksachetyp, dokumentnummer, titel, pdf_url
              FROM drucksache WHERE titel ILIKE ?${vWhere} LIMIT ${PAGE_SIZE}`,
             vParams
         ),
-        query(
+        query<AktivitaetItem>(
             `SELECT id, aktivitaetsart, person_name, datum::VARCHAR AS datum
              FROM aktivitaet WHERE person_name ILIKE ?${vWhere} LIMIT ${PAGE_SIZE}`,
             vParams

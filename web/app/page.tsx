@@ -51,7 +51,7 @@ export default function Home() {
   }
 
   const totalHits = results
-    ? results.counts.vorgaenge + results.counts.dokumente + results.counts.aktivitaeten
+    ? results.vorgaenge.length + results.dokumente.length + results.aktivitaeten.length + results.contentMatches.length
     : 0
 
   return (
@@ -118,7 +118,7 @@ export default function Home() {
             {results.counts.contentMatches.toLocaleString('de-DE')} Dokumentinhalte
           </span>
           <span className="ml-auto text-gray-400">
-            {totalHits.toLocaleString('de-DE')} total matches
+            {totalHits.toLocaleString('de-DE')} matches shown
           </span>
         </div>
       )}

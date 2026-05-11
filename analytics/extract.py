@@ -11,6 +11,7 @@ Resumable with retry metadata in extraction_log:
 
 Usage:
     python -m analytics.extract
+    # defaults to WP 20; pass --wahlperiode to change scope
     python -m analytics.extract --wahlperiode 20
     python -m analytics.extract --workers 16 --batch 128
     python -m analytics.extract --warehouse /path/to/warehouse.duckdb --embeddings /path/to/embeddings.duckdb

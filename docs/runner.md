@@ -78,7 +78,6 @@ Configure these in **Settings → Secrets and variables → Actions → New repo
 | `S3_SECRET_ACCESS_KEY` | MinIO secret key                                             |
 | `S3_BUCKET`            | Bucket name, e.g. `bundeswarehouse`                          |
 | `BUNDESTAG_API_KEY`    | DIP Bundestag API key                                        |
-| `SECRET_UPDATER_TOKEN` | PAT with `repo` scope (used by the API key updater workflow) |
 | `VPS_HOST`             | VPS hostname or IP used by the web deploy workflow           |
 | `VPS_USER`             | SSH user used by the web deploy workflow                     |
 | `VPS_SSH_KEY`          | Private SSH key used by the web deploy workflow              |
@@ -96,7 +95,7 @@ Configure these in **Settings → Secrets and variables → Actions → New repo
 
 ### Incremental updates (automatic)
 
-The `Incremental Ingest` workflow runs automatically every day at 03:00 UTC.
+The `Incremental Ingest` workflow runs automatically on the first day of each month at 03:00 UTC.
 You can also trigger it manually via **Actions → Incremental Ingest – Bundestag Data → Run workflow**.
 
 ---

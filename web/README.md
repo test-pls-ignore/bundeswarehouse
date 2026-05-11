@@ -24,7 +24,7 @@ This directory contains the Next.js frontend for browsing and querying Bundestag
 ## Local development
 
 ```bash
-cd /home/runner/work/bundeswarehouse/bundeswarehouse/web
+cd web
 npm ci
 npm run dev
 ```
@@ -41,7 +41,7 @@ npm run start
 
 ## Deployment
 
-Production deployment is handled by `/home/runner/work/bundeswarehouse/bundeswarehouse/.github/workflows/web_deploy.yml`.
+Production deployment is handled by `../.github/workflows/web_deploy.yml`.
 
 That workflow:
 
@@ -50,4 +50,4 @@ That workflow:
 3. Uploads the tarball to the VPS over SSH on port `2225`.
 4. Installs production dependencies on the VPS and restarts the `bundeswarehouse-web` systemd service.
 
-See `/home/runner/work/bundeswarehouse/bundeswarehouse/docs/runner.md` for the required deployment secrets and server assumptions.
+See `../docs/runner.md` for the required deployment secrets and server assumptions.

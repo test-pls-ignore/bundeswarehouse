@@ -196,6 +196,7 @@ async def process_batch(
     log_rows: list[tuple] = []
     all_chunks: list[str] = []
     chunk_meta: list[tuple[str, int]] = []  # (doc_id, local_chunk_index)
+    # Only docs with successful fresh chunks should replace existing chunk rows.
     docs_to_replace: set[str] = set()
 
     for (doc_id, url, aktualisiert, previous_attempts), pdf_bytes in zip(batch, pdfs):
@@ -245,7 +246,7 @@ async def process_batch(
             log_rows,
         )
 
-    ok = sum(1 for row in log_rows if row[1] == "ok")
+    ok = sum(1 for _, status, *_ in log_rows if status == "ok")
     return ok, len(log_rows) - ok
 
 

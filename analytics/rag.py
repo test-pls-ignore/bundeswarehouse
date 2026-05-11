@@ -54,6 +54,8 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
         raise RetrievalError(f"Failed to open warehouse vector index at '{WAREHOUSE_PATH}': {e}") from e
 
     try:
+        # wahlperiode is passed twice: first placeholder checks NULL, second applies equality
+        # in the SQL predicate "(? IS NULL OR column = ?)".
         params: list = [q_vec, wahlperiode, wahlperiode]
         rows = con.execute(f"""
             SELECT
@@ -95,6 +97,8 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
         ) from e
 
     try:
+        # wahlperiode is passed twice: first placeholder checks NULL, second applies equality
+        # in the SQL predicate "(? IS NULL OR column = ?)".
         params: list = [q_vec, wahlperiode, wahlperiode]
         rows = con.execute(f"""
             SELECT

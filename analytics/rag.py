@@ -50,11 +50,7 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
         return []
 
     try:
-        where = ""
-        params: list = [q_vec]
-        if wahlperiode is not None:
-            where = "AND p.wahlperiode = ?"
-            params.append(wahlperiode)
+        params: list = [q_vec, wahlperiode, wahlperiode]
         rows = con.execute(f"""
             SELECT
                 c.chunk_id,
@@ -68,7 +64,7 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
             FROM chunks c
             JOIN plenarprotokoll p ON p.id = c.doc_id
             WHERE score > 0.3
-            {where}
+              AND (? IS NULL OR p.wahlperiode = ?)
             ORDER BY score DESC
             LIMIT {top_k}
         """, params).fetchall()
@@ -93,11 +89,7 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
         return []
 
     try:
-        where = ""
-        params: list = [q_vec]
-        if wahlperiode is not None:
-            where = "AND d.wahlperiode = ?"
-            params.append(wahlperiode)
+        params: list = [q_vec, wahlperiode, wahlperiode]
         rows = con.execute(f"""
             SELECT
                 c.chunk_id,
@@ -112,7 +104,7 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
             FROM drucksache_chunks c
             JOIN warehouse.drucksache d ON d.id = c.doc_id
             WHERE score > 0.3
-            {where}
+              AND (? IS NULL OR d.wahlperiode = ?)
             ORDER BY score DESC
             LIMIT {top_k}
         """, params).fetchall()

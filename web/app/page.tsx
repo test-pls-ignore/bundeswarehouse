@@ -129,7 +129,7 @@ export default function Home() {
               <h2 className="text-2xl font-bold text-gray-800 mb-4 border-b pb-2 flex justify-between items-baseline">
                 <span>Dokumentinhalte (RAG)</span>
                 <span className="text-sm font-normal text-gray-400">
-                  {results.contentMatches.length} of {results.counts.contentMatches.toLocaleString('de-DE')}
+                  {results.contentMatches.length.toLocaleString('de-DE')} Treffer
                 </span>
               </h2>
               <div className="grid gap-4">

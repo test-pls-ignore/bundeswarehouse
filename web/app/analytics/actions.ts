@@ -4,8 +4,8 @@ import { query } from '@/lib/db'
 
 const RAG_API_URL = process.env.RAG_API_URL ?? 'http://localhost:8000'
 
-export type MonthlyPoint = { month: string; n: number }
-export type DistributionPoint = { label: string; n: number }
+export type MonthlyPoint = { month: string; count: number }
+export type DistributionPoint = { label: string; count: number }
 
 export type AnalyticsData = {
     wahlperiode: number
@@ -19,7 +19,7 @@ export async function loadAnalytics(wahlperiode: number): Promise<AnalyticsData>
     const [docVolumeByMonth, activityTypes, documentTypes, titleRows] = await Promise.all([
         query<MonthlyPoint>(
             `
-            SELECT strftime(datum, '%Y-%m') AS month, COUNT(*)::INTEGER AS n
+            SELECT strftime(datum, '%Y-%m') AS month, COUNT(*)::INTEGER AS count
             FROM drucksache
             WHERE wahlperiode = ?
             GROUP BY 1
@@ -27,9 +27,9 @@ export async function loadAnalytics(wahlperiode: number): Promise<AnalyticsData>
             `,
             [wahlperiode]
         ),
-        query<{ label: string; n: number }>(
+        query<{ label: string; count: number }>(
             `
-            SELECT COALESCE(aktivitaetsart, 'Unbekannt') AS label, COUNT(*)::INTEGER AS n
+            SELECT COALESCE(aktivitaetsart, 'Unbekannt') AS label, COUNT(*)::INTEGER AS count
             FROM aktivitaet
             WHERE wahlperiode = ?
             GROUP BY 1
@@ -38,9 +38,9 @@ export async function loadAnalytics(wahlperiode: number): Promise<AnalyticsData>
             `,
             [wahlperiode]
         ),
-        query<{ label: string; n: number }>(
+        query<{ label: string; count: number }>(
             `
-            SELECT COALESCE(drucksachetyp, 'Unbekannt') AS label, COUNT(*)::INTEGER AS n
+            SELECT COALESCE(drucksachetyp, 'Unbekannt') AS label, COUNT(*)::INTEGER AS count
             FROM drucksache
             WHERE wahlperiode = ?
             GROUP BY 1
@@ -72,7 +72,7 @@ export async function loadAnalytics(wahlperiode: number): Promise<AnalyticsData>
 const STOPWORDS = new Set([
     'der', 'die', 'das', 'und', 'oder', 'mit', 'für', 'von', 'des', 'dem', 'den', 'ein', 'eine', 'einer', 'eines',
     'im', 'in', 'am', 'an', 'auf', 'zu', 'zur', 'zum', 'über', 'unter', 'bei', 'nach', 'vor', 'als', 'ist',
-    'sowie', 'durch', 'nicht', 'wird', 'werden', 'vom', 'zur', 'dass', 'zur', 'aus', 'auch', 'mehr', 'zwischen',
+    'sowie', 'durch', 'nicht', 'wird', 'werden', 'vom', 'dass', 'aus', 'auch', 'mehr', 'zwischen',
 ])
 
 function computeTopThemes(titles: string[]): DistributionPoint[] {
@@ -86,7 +86,7 @@ function computeTopThemes(titles: string[]): DistributionPoint[] {
     return Array.from(counts.entries())
         .sort((a, b) => b[1] - a[1])
         .slice(0, 15)
-        .map(([label, n]) => ({ label, n }))
+        .map(([label, count]) => ({ label, count }))
 }
 
 export async function summarizeAnalytics(wahlperiode: number): Promise<string | null> {

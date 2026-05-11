@@ -1,7 +1,7 @@
 # MinIO Setup on the VPS
 
 MinIO provides an S3-compatible object storage server that runs entirely on your own machine.
-The bundeswarehouse pipeline stores raw data, processed outputs, and manifest files in MinIO.
+The bundeswarehouse pipeline stores raw snapshots, incremental resource updates, and manifest files in MinIO.
 
 ---
 
@@ -127,19 +127,30 @@ minio.example.com {
 
 ## 8. Storage layout inside the bucket
 
-```
+```text
 bundeswarehouse/
   raw/
-    vorgang/YYYY-MM-DD/batch_00000.ndjson
-    drucksache/YYYY-MM-DD/batch_00000.ndjson
-    ...
-  processed/
-    ...
+    _staging/
+      <run_id>/
+        vorgang/batch_00000.ndjson
+        drucksache/batch_00000.ndjson
+        ...
+    current/
+      vorgang/batch_00000.ndjson
+      drucksache/batch_00000.ndjson
+      ...
+    LATEST_RUN.json
+    <resource>/YYYY-MM-DD/batch_00000.ndjson
   manifests/
     latest.json
-    YYYY-MM-DD.json
     state.json
 ```
+
+- `raw/_staging/<run_id>/...` holds in-progress full-load output until the run publishes successfully.
+- `raw/current/...` is the published full-load snapshot that downstream readers should treat as canonical.
+- `raw/LATEST_RUN.json` points to the most recently published full-load run.
+- `raw/<resource>/YYYY-MM-DD/...` stores incremental updates partitioned by resource and date.
+- `manifests/state.json` is the persisted pipeline state, and `manifests/latest.json` is the manifest for the current published snapshot.
 
 ---
 

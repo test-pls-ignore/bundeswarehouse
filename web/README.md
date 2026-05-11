@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# bundeswarehouse web app
 
-## Getting Started
+This directory contains the Next.js frontend for browsing and querying Bundestag data prepared by the pipeline in the repository root.
 
-First, run the development server:
+## Features
+
+- Search across `vorgang`, `drucksache`, and `aktivitaet` records.
+- Browse `plenarprotokoll` rows with filters for Wahlperiode, year, and special sessions.
+- Send questions to the optional RAG API exposed by the `/ask` page.
+
+## Requirements
+
+- Node.js 20+ for local development and production builds.
+- A readable DuckDB database file. By default the app opens `../warehouse.duckdb`.
+- Optional: a running RAG API if you want to use the `/ask` feature.
+
+## Environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DUCKDB_PATH` | `../warehouse.duckdb` | Path to the DuckDB file opened by `web/lib/db.ts`. |
+| `RAG_API_URL` | `http://localhost:8000` | Base URL for the optional RAG API used by `app/ask/actions.ts`. |
+
+## Local development
 
 ```bash
+cd /home/runner/work/bundeswarehouse/bundeswarehouse/web
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Useful commands
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run lint
+npm run build
+npm run start
+```
 
-## Learn More
+## Deployment
 
-To learn more about Next.js, take a look at the following resources:
+Production deployment is handled by `/home/runner/work/bundeswarehouse/bundeswarehouse/.github/workflows/web_deploy.yml`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+That workflow:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Builds the app on `ubuntu-latest`.
+2. Packages `.next`, `public`, `package.json`, `package-lock.json`, and `next.config.ts`.
+3. Uploads the tarball to the VPS over SSH on port `2225`.
+4. Installs production dependencies on the VPS and restarts the `bundeswarehouse-web` systemd service.
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+See `/home/runner/work/bundeswarehouse/bundeswarehouse/docs/runner.md` for the required deployment secrets and server assumptions.

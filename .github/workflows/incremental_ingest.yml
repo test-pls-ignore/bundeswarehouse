@@ -44,6 +44,21 @@ jobs:
       - name: Run incremental update
         run: python -m pipeline.cli incremental-update
 
+      - name: Materialize warehouse snapshot
+        run: python -m pipeline.cli materialize --output warehouse.duckdb
+
+      - name: Update Wahlperiode document embeddings
+        run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
+
+      - name: Upload embedding artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-index-wp-20-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            warehouse.duckdb
+            embeddings.duckdb
+
       - name: Commit updated state.json
         run: |
           git config user.name  "GitHub Actions"

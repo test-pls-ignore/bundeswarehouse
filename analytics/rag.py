@@ -28,12 +28,17 @@ EMBEDDINGS_PATH = os.getenv("EMBEDDINGS_PATH", "embeddings.duckdb")
 EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 TOP_K = 8
 CLAUDE_MODEL = "claude-sonnet-4-6"
+DEFAULT_WAHLPERIODE = int(os.getenv("RAG_DEFAULT_WAHLPERIODE", "20"))
 
 
 @dataclass
 class Answer:
     text: str
     sources: list[dict] = field(default_factory=list)
+
+
+class RetrievalError(RuntimeError):
+    pass
 
 
 def _get_model():
@@ -45,11 +50,13 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
     try:
         con = duckdb.connect(WAREHOUSE_PATH, read_only=True)
         con.execute("LOAD vss")
-    except Exception:
-        return []
+    except Exception as e:
+        raise RetrievalError(f"Failed to open warehouse vector index at '{WAREHOUSE_PATH}': {e}") from e
 
     try:
-        wp_filter = f"AND p.wahlperiode = {wahlperiode}" if wahlperiode else ""
+        # wahlperiode is passed twice: first placeholder checks NULL, second applies equality
+        # in the SQL predicate "(? IS NULL OR column = ?)".
+        params: list = [q_vec, wahlperiode, wahlperiode]
         rows = con.execute(f"""
             SELECT
                 c.chunk_id,
@@ -63,12 +70,12 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
             FROM chunks c
             JOIN plenarprotokoll p ON p.id = c.doc_id
             WHERE score > 0.3
-            {wp_filter}
+              AND (? IS NULL OR p.wahlperiode = ?)
             ORDER BY score DESC
             LIMIT {top_k}
-        """, [q_vec]).fetchall()
-    except Exception:
-        return []
+        """, params).fetchall()
+    except Exception as e:
+        raise RetrievalError(f"Failed to query plenarprotokoll chunks: {e}") from e
     finally:
         con.close()
 
@@ -78,17 +85,21 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
 
 def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | None) -> list[dict]:
     if not Path(EMBEDDINGS_PATH).exists():
-        return []
+        raise RetrievalError(f"Embeddings database not found at '{EMBEDDINGS_PATH}'")
 
     try:
         con = duckdb.connect(EMBEDDINGS_PATH, read_only=True)
         con.execute("LOAD vss")
         con.execute(f"ATTACH '{WAREHOUSE_PATH}' AS warehouse (READ_ONLY)")
-    except Exception:
-        return []
+    except Exception as e:
+        raise RetrievalError(
+            f"Failed to open drucksache vector index at '{EMBEDDINGS_PATH}' (warehouse '{WAREHOUSE_PATH}'): {e}"
+        ) from e
 
     try:
-        wp_filter = f"AND d.wahlperiode = {wahlperiode}" if wahlperiode else ""
+        # wahlperiode is passed twice: first placeholder checks NULL, second applies equality
+        # in the SQL predicate "(? IS NULL OR column = ?)".
+        params: list = [q_vec, wahlperiode, wahlperiode]
         rows = con.execute(f"""
             SELECT
                 c.chunk_id,
@@ -103,12 +114,12 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
             FROM drucksache_chunks c
             JOIN warehouse.drucksache d ON d.id = c.doc_id
             WHERE score > 0.3
-            {wp_filter}
+              AND (? IS NULL OR d.wahlperiode = ?)
             ORDER BY score DESC
             LIMIT {top_k}
-        """, [q_vec]).fetchall()
-    except Exception:
-        return []
+        """, params).fetchall()
+    except Exception as e:
+        raise RetrievalError(f"Failed to query drucksache chunks: {e}") from e
     finally:
         con.close()
 
@@ -117,6 +128,8 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
 
 
 def retrieve(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) -> list[dict]:
+    if wahlperiode is None:
+        wahlperiode = DEFAULT_WAHLPERIODE
     model = _get_model()
     q_vec = model.encode([question], normalize_embeddings=True)[0].tolist()
 
@@ -126,6 +139,26 @@ def retrieve(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) 
     )
     results.sort(key=lambda r: r["score"], reverse=True)
     return results[:top_k]
+
+
+def retrieve_sources(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) -> list[dict]:
+    chunks = retrieve(question, top_k=top_k, wahlperiode=wahlperiode)
+    return _sources_from_chunks(chunks)
+
+
+def _sources_from_chunks(chunks: list[dict]) -> list[dict]:
+    return [{
+        "chunk_id": c["chunk_id"],
+        "doc_id": c["doc_id"],
+        "source_type": c["source_type"],
+        "speaker": c.get("speaker"),
+        "titel": c.get("titel"),
+        "datum": c["datum"],
+        "wahlperiode": c["wahlperiode"],
+        "pdf_url": c["pdf_url"],
+        "score": round(c["score"], 3),
+        "snippet": c["text"][:200],
+    } for c in chunks]
 
 
 def _format_context(chunks: list[dict]) -> str:
@@ -170,18 +203,7 @@ def ask(question: str, wahlperiode: int | None = None) -> Answer:
         messages=[{"role": "user", "content": f"Auszüge:\n\n{context}\n\nFrage: {question}"}],
     )
 
-    sources = [{
-        "chunk_id": c["chunk_id"],
-        "doc_id": c["doc_id"],
-        "source_type": c["source_type"],
-        "speaker": c.get("speaker"),
-        "titel": c.get("titel"),
-        "datum": c["datum"],
-        "wahlperiode": c["wahlperiode"],
-        "pdf_url": c["pdf_url"],
-        "score": round(c["score"], 3),
-        "snippet": c["text"][:200],
-    } for c in chunks]
+    sources = _sources_from_chunks(chunks)
 
     return Answer(text=message.content[0].text, sources=sources)
 

@@ -5,8 +5,10 @@ This directory contains the Next.js frontend for browsing and querying Bundestag
 ## Features
 
 - Search across `vorgang`, `drucksache`, and `aktivitaet` records.
+- Show content-based document hits from the RAG API in search results.
 - Browse `plenarprotokoll` rows with filters for Wahlperiode, year, and special sessions.
 - Send questions to the optional RAG API exposed by the `/ask` page.
+- Analyze Wahlperiode data via the `/analytics` page.
 
 ## Requirements
 

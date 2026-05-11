@@ -44,6 +44,12 @@ jobs:
       - name: Run incremental update
         run: python -m pipeline.cli incremental-update
 
+      - name: Materialize warehouse snapshot
+        run: python -m pipeline.cli materialize --output warehouse.duckdb
+
+      - name: Update Wahlperiode document embeddings
+        run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
+
       - name: Commit updated state.json
         run: |
           git config user.name  "GitHub Actions"

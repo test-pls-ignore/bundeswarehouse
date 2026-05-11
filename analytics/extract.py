@@ -1,13 +1,17 @@
 """
 analytics/extract.py — PDF extraction + embedding pipeline for Drucksachen.
 
-Downloads PDFs from dserver.bundestag.de, extracts text with PyMuPDF,
-chunks, embeds with sentence-transformers, and stores vectors in embeddings.duckdb.
+Downloads linked PDFs, extracts text with PyMuPDF, chunks + embeds with
+sentence-transformers, and stores vectors in embeddings.duckdb.
 
-Resumable: already-processed doc IDs in extraction_log are skipped on re-run.
+Resumable with retry metadata in extraction_log:
+- already-processed docs are skipped
+- failed docs can be retried
+- changed pdf_url/aktualisiert values are reprocessed
 
 Usage:
     python -m analytics.extract
+    python -m analytics.extract --wahlperiode 20
     python -m analytics.extract --workers 16 --batch 128
     python -m analytics.extract --warehouse /path/to/warehouse.duckdb --embeddings /path/to/embeddings.duckdb
 """
@@ -31,6 +35,8 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 DEFAULT_WORKERS = 8
 DEFAULT_BATCH = 256
+DEFAULT_WAHLPERIODE = 20
+DEFAULT_MAX_ATTEMPTS = 3
 
 
 def setup_db(path: str) -> duckdb.DuckDBPyConnection:
@@ -50,22 +56,95 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
             doc_id       VARCHAR PRIMARY KEY,
             status       VARCHAR NOT NULL,
             chunks       INTEGER,
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            last_error   VARCHAR,
+            last_pdf_url VARCHAR,
+            last_aktualisiert VARCHAR,
             extracted_at TIMESTAMPTZ DEFAULT now(),
         )
     """)
+    for migration in [
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_error VARCHAR",
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_pdf_url VARCHAR",
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_aktualisiert VARCHAR",
+    ]:
+        try:
+            con.execute(migration)
+        except Exception:
+            logger.debug("Skipping migration statement: %s", migration)
     return con
 
 
-def get_pending(warehouse: str, con: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
+def get_pending(
+    warehouse: str,
+    con: duckdb.DuckDBPyConnection,
+    wahlperiode: int | None,
+    max_attempts: int,
+) -> list[tuple[str, str, str | None, int]]:
     wh = duckdb.connect(warehouse, read_only=True)
+    wp_filter = "AND wahlperiode = ?" if wahlperiode is not None else ""
     all_docs = wh.execute(
-        "SELECT id, pdf_url FROM drucksache WHERE pdf_url IS NOT NULL AND pdf_url != ''"
+        f"""
+        SELECT id, pdf_url, aktualisiert::VARCHAR AS aktualisiert
+        FROM drucksache
+        WHERE pdf_url IS NOT NULL AND pdf_url != ''
+        {wp_filter}
+        ORDER BY aktualisiert DESC NULLS LAST
+        """,
+        [wahlperiode] if wahlperiode is not None else [],
     ).fetchall()
     wh.close()
 
-    done = {row[0] for row in con.execute("SELECT doc_id FROM extraction_log").fetchall()}
-    pending = [(id_, url) for id_, url in all_docs if id_ not in done]
-    logger.info("%d total docs, %d already done, %d pending", len(all_docs), len(done), len(pending))
+    log_rows = con.execute(
+        """
+        SELECT doc_id, status, attempts, last_pdf_url, last_aktualisiert
+        FROM extraction_log
+        """
+    ).fetchall()
+    logs = {
+        row[0]: {
+            "status": row[1],
+            "attempts": int(row[2] or 0),
+            "last_pdf_url": row[3],
+            "last_aktualisiert": row[4],
+        }
+        for row in log_rows
+    }
+
+    deduped_docs: list[tuple[str, str, str | None]] = []
+    seen_urls: set[str] = set()
+    for doc_id, url, aktualisiert in all_docs:
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        deduped_docs.append((doc_id, url, aktualisiert))
+
+    pending: list[tuple[str, str, str | None, int]] = []
+    for doc_id, url, aktualisiert in deduped_docs:
+        entry = logs.get(doc_id)
+        if entry is None:
+            pending.append((doc_id, url, aktualisiert, 0))
+            continue
+        signature_changed = (
+            entry["last_pdf_url"] != url
+            or (entry["last_aktualisiert"] or None) != (aktualisiert or None)
+        )
+        if entry["status"] == "ok" and not signature_changed:
+            continue
+        if entry["attempts"] >= max_attempts and not signature_changed:
+            continue
+        pending.append((doc_id, url, aktualisiert, int(entry["attempts"])))
+
+    already_done = sum(1 for row in logs.values() if row["status"] == "ok")
+    logger.info(
+        "%d total docs (%d deduped by URL), %d already done, %d pending (WP=%s)",
+        len(all_docs),
+        len(deduped_docs),
+        already_done,
+        len(pending),
+        wahlperiode if wahlperiode is not None else "ALL",
+    )
     return pending
 
 
@@ -104,39 +183,40 @@ def extract_text(pdf_bytes: bytes) -> str:
 
 
 async def process_batch(
-    batch: list[tuple[str, str]],
+    batch: list[tuple[str, str, str | None, int]],
     client: httpx.AsyncClient,
     sem: asyncio.Semaphore,
     model: SentenceTransformer,
     con: duckdb.DuckDBPyConnection,
 ) -> tuple[int, int]:
-    pdfs = await asyncio.gather(*[fetch_pdf(client, sem, url) for _, url in batch])
+    pdfs = await asyncio.gather(*[fetch_pdf(client, sem, url) for _, url, _, _ in batch])
 
     chunk_rows: list[tuple] = []
     log_rows: list[tuple] = []
     all_chunks: list[str] = []
     chunk_meta: list[tuple[str, int]] = []  # (doc_id, local_chunk_index)
 
-    for (doc_id, _), pdf_bytes in zip(batch, pdfs):
+    for (doc_id, url, aktualisiert, previous_attempts), pdf_bytes in zip(batch, pdfs):
+        attempts = previous_attempts + 1
         if pdf_bytes is None:
-            log_rows.append((doc_id, "failed", 0))
+            log_rows.append((doc_id, "failed", 0, attempts, "download_failed", url, aktualisiert))
             continue
         try:
             text = extract_text(pdf_bytes)
         except Exception as e:
             logger.warning("Extract failed %s: %s", doc_id, e)
-            log_rows.append((doc_id, "failed", 0))
+            log_rows.append((doc_id, "failed", 0, attempts, str(e)[:400], url, aktualisiert))
             continue
 
         chunks = chunk_text(text)
         if not chunks:
-            log_rows.append((doc_id, "empty", 0))
+            log_rows.append((doc_id, "empty", 0, attempts, "empty_text", url, aktualisiert))
             continue
 
         for i, chunk in enumerate(chunks):
             all_chunks.append(chunk)
             chunk_meta.append((doc_id, i))
-        log_rows.append((doc_id, "ok", len(chunks)))
+        log_rows.append((doc_id, "ok", len(chunks), attempts, None, url, aktualisiert))
 
     if all_chunks:
         embeddings = model.encode(all_chunks, normalize_embeddings=True, show_progress_bar=False)
@@ -150,7 +230,11 @@ async def process_batch(
         )
     if log_rows:
         con.executemany(
-            "INSERT OR REPLACE INTO extraction_log(doc_id, status, chunks) VALUES (?, ?, ?)",
+            """
+            INSERT OR REPLACE INTO extraction_log(
+                doc_id, status, chunks, attempts, last_error, last_pdf_url, last_aktualisiert
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
             log_rows,
         )
 
@@ -158,10 +242,17 @@ async def process_batch(
     return ok, len(log_rows) - ok
 
 
-async def run(warehouse: str, embeddings_path: str, workers: int, batch_size: int) -> None:
+async def run(
+    warehouse: str,
+    embeddings_path: str,
+    workers: int,
+    batch_size: int,
+    wahlperiode: int | None,
+    max_attempts: int,
+) -> None:
     con = setup_db(embeddings_path)
     model = SentenceTransformer(EMBED_MODEL)
-    pending = get_pending(warehouse, con)
+    pending = get_pending(warehouse, con, wahlperiode=wahlperiode, max_attempts=max_attempts)
 
     if not pending:
         logger.info("Nothing to do.")
@@ -205,10 +296,26 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Extract and embed Drucksachen PDFs.")
     parser.add_argument("--warehouse", default=WAREHOUSE_PATH)
     parser.add_argument("--embeddings", default=EMBEDDINGS_PATH)
+    parser.add_argument("--wahlperiode", type=int, default=DEFAULT_WAHLPERIODE, help="Filter by Wahlperiode (default: 20).")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS, help="Concurrent downloads")
     parser.add_argument("--batch", type=int, default=DEFAULT_BATCH, help="Docs per processing batch")
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=DEFAULT_MAX_ATTEMPTS,
+        help="Skip unchanged failed docs after this many attempts (default: 3).",
+    )
     args = parser.parse_args()
-    asyncio.run(run(args.warehouse, args.embeddings, args.workers, args.batch))
+    asyncio.run(
+        run(
+            args.warehouse,
+            args.embeddings,
+            args.workers,
+            args.batch,
+            args.wahlperiode,
+            args.max_attempts,
+        )
+    )
 
 
 if __name__ == "__main__":

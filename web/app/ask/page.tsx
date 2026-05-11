@@ -6,6 +6,7 @@ import { askRag, type AskResult, type Source } from './actions'
 
 export default function AskPage() {
     const [question, setQuestion] = useState('')
+    const [wahlperiode, setWahlperiode] = useState<number>(20)
     const [result, setResult] = useState<AskResult | null>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -17,7 +18,7 @@ export default function AskPage() {
         setError(null)
         setResult(null)
         try {
-            setResult(await askRag(question.trim()))
+            setResult(await askRag(question.trim(), wahlperiode))
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unknown error')
         } finally {
@@ -32,11 +33,24 @@ export default function AskPage() {
                 <p className="text-gray-600">Ask a question — answered from parliamentary documents</p>
                 <div className="mt-3 flex gap-4 justify-center text-sm">
                     <Link href="/" className="text-blue-600 hover:underline">← Keyword search</Link>
+                    <Link href="/analytics" className="text-emerald-600 hover:underline">Analytics →</Link>
                     <Link href="/plenarprotokoll" className="text-orange-600 hover:underline">Plenarprotokoll-Browser →</Link>
                 </div>
             </header>
 
             <form onSubmit={handleSubmit} className="w-full max-w-2xl mb-8">
+                <div className="mb-2 flex items-center justify-end gap-2">
+                    <label className="text-sm text-gray-500" htmlFor="ask-wahlperiode-select">Wahlperiode</label>
+                    <select
+                        id="ask-wahlperiode-select"
+                        value={wahlperiode}
+                        onChange={e => setWahlperiode(Number(e.target.value))}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700"
+                    >
+                        <option value={20}>WP 20</option>
+                        <option value={19}>WP 19</option>
+                    </select>
+                </div>
                 <div className="relative">
                     <textarea
                         className="w-full p-4 pl-6 pr-36 rounded-2xl shadow-lg border-2 border-transparent focus:border-indigo-500 focus:outline-none text-lg text-gray-800 resize-none"

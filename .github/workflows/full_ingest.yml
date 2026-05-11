@@ -64,6 +64,14 @@ jobs:
         if: ${{ inputs.dry_run != 'true' }}
         run: python -m pipeline.cli full-load
 
+      - name: Materialize warehouse snapshot
+        if: ${{ inputs.dry_run != 'true' }}
+        run: python -m pipeline.cli materialize --output warehouse.duckdb
+
+      - name: Build Wahlperiode document embeddings
+        if: ${{ inputs.dry_run != 'true' }}
+        run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
+
       - name: Commit updated state.json
         if: ${{ inputs.dry_run != 'true' }}
         run: |

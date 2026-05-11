@@ -8,7 +8,7 @@ Usage:
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from analytics.rag import ask
+from analytics.rag import ask, retrieve_sources
 
 app = FastAPI(title="bundeswarehouse RAG API")
 
@@ -16,6 +16,12 @@ app = FastAPI(title="bundeswarehouse RAG API")
 class AskRequest(BaseModel):
     question: str
     wahlperiode: int | None = None
+
+
+class SearchRequest(BaseModel):
+    question: str
+    wahlperiode: int | None = None
+    top_k: int = 8
 
 
 class Source(BaseModel):
@@ -36,6 +42,10 @@ class AskResponse(BaseModel):
     sources: list[Source]
 
 
+class SearchResponse(BaseModel):
+    sources: list[Source]
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -46,5 +56,14 @@ def ask_endpoint(req: AskRequest):
     try:
         answer = ask(req.question, req.wahlperiode)
         return {"text": answer.text, "sources": answer.sources}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/search", response_model=SearchResponse)
+def search_endpoint(req: SearchRequest):
+    try:
+        sources = retrieve_sources(req.question, top_k=req.top_k, wahlperiode=req.wahlperiode)
+        return {"sources": sources}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

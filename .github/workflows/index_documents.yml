@@ -1,0 +1,40 @@
+name: Index Documents for RAG
+
+on:
+  workflow_dispatch:
+    inputs:
+      wahlperiode:
+        description: "Wahlperiode to index"
+        required: false
+        default: "20"
+        type: string
+
+jobs:
+  index-documents:
+    runs-on: [self-hosted, vps]
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv (self-hosted)
+        if: "contains(runner.labels, 'self-hosted')"
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Materialize current warehouse snapshot
+        run: python -m pipeline.cli materialize --output warehouse.duckdb
+
+      - name: Build document embeddings
+        run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode ${{ inputs.wahlperiode }}

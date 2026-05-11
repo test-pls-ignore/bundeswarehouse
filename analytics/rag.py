@@ -28,6 +28,7 @@ EMBEDDINGS_PATH = os.getenv("EMBEDDINGS_PATH", "embeddings.duckdb")
 EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 TOP_K = 8
 CLAUDE_MODEL = "claude-sonnet-4-6"
+DEFAULT_WAHLPERIODE = int(os.getenv("RAG_DEFAULT_WAHLPERIODE", "20"))
 
 
 @dataclass
@@ -49,7 +50,11 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
         return []
 
     try:
-        wp_filter = f"AND p.wahlperiode = {wahlperiode}" if wahlperiode else ""
+        where = ""
+        params: list = [q_vec]
+        if wahlperiode is not None:
+            where = "AND p.wahlperiode = ?"
+            params.append(wahlperiode)
         rows = con.execute(f"""
             SELECT
                 c.chunk_id,
@@ -63,10 +68,10 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
             FROM chunks c
             JOIN plenarprotokoll p ON p.id = c.doc_id
             WHERE score > 0.3
-            {wp_filter}
+            {where}
             ORDER BY score DESC
             LIMIT {top_k}
-        """, [q_vec]).fetchall()
+        """, params).fetchall()
     except Exception:
         return []
     finally:
@@ -88,7 +93,11 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
         return []
 
     try:
-        wp_filter = f"AND d.wahlperiode = {wahlperiode}" if wahlperiode else ""
+        where = ""
+        params: list = [q_vec]
+        if wahlperiode is not None:
+            where = "AND d.wahlperiode = ?"
+            params.append(wahlperiode)
         rows = con.execute(f"""
             SELECT
                 c.chunk_id,
@@ -103,10 +112,10 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
             FROM drucksache_chunks c
             JOIN warehouse.drucksache d ON d.id = c.doc_id
             WHERE score > 0.3
-            {wp_filter}
+            {where}
             ORDER BY score DESC
             LIMIT {top_k}
-        """, [q_vec]).fetchall()
+        """, params).fetchall()
     except Exception:
         return []
     finally:
@@ -117,6 +126,8 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
 
 
 def retrieve(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) -> list[dict]:
+    if wahlperiode is None:
+        wahlperiode = DEFAULT_WAHLPERIODE
     model = _get_model()
     q_vec = model.encode([question], normalize_embeddings=True)[0].tolist()
 
@@ -126,6 +137,26 @@ def retrieve(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) 
     )
     results.sort(key=lambda r: r["score"], reverse=True)
     return results[:top_k]
+
+
+def retrieve_sources(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) -> list[dict]:
+    chunks = retrieve(question, top_k=top_k, wahlperiode=wahlperiode)
+    return _sources_from_chunks(chunks)
+
+
+def _sources_from_chunks(chunks: list[dict]) -> list[dict]:
+    return [{
+        "chunk_id": c["chunk_id"],
+        "doc_id": c["doc_id"],
+        "source_type": c["source_type"],
+        "speaker": c.get("speaker"),
+        "titel": c.get("titel"),
+        "datum": c["datum"],
+        "wahlperiode": c["wahlperiode"],
+        "pdf_url": c["pdf_url"],
+        "score": round(c["score"], 3),
+        "snippet": c["text"][:200],
+    } for c in chunks]
 
 
 def _format_context(chunks: list[dict]) -> str:
@@ -170,18 +201,7 @@ def ask(question: str, wahlperiode: int | None = None) -> Answer:
         messages=[{"role": "user", "content": f"Auszüge:\n\n{context}\n\nFrage: {question}"}],
     )
 
-    sources = [{
-        "chunk_id": c["chunk_id"],
-        "doc_id": c["doc_id"],
-        "source_type": c["source_type"],
-        "speaker": c.get("speaker"),
-        "titel": c.get("titel"),
-        "datum": c["datum"],
-        "wahlperiode": c["wahlperiode"],
-        "pdf_url": c["pdf_url"],
-        "score": round(c["score"], 3),
-        "snippet": c["text"][:200],
-    } for c in chunks]
+    sources = _sources_from_chunks(chunks)
 
     return Answer(text=message.content[0].text, sources=sources)
 

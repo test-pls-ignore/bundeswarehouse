@@ -3,6 +3,9 @@
 A data pipeline that ingests open data from the **Bundestag DIP API** and stores
 it in MinIO (S3-compatible object storage) as NDJSON files.
 
+It also includes a prototype RAG stack that indexes linked Drucksachen PDFs
+for one Wahlperiode (default: WP 20) into vector embeddings.
+
 ---
 
 ## Quick start
@@ -110,6 +113,31 @@ To clean up leftover staging data from failed runs, use the
 | `DIP_API_KEY_TRANSPORT` | `header` | API key transport mode: `header` (Authorization) or `query` (adds `apikey` query parameter). |
 | `DIP_INCREMENTAL_OVERLAP_MINUTES` | `15` | Overlap window applied to incremental `f.aktualisiert.start` lower bound (minimum enforced: 15). |
 | `DIP_MAX_CONCURRENCY` | `1` | Declared request concurrency cap. Must stay within `1..25` per DIP guidance; pipeline executes requests single-threaded. |
+
+### Optional – RAG indexing
+
+| Variable | Default | Description |
+|---|---|---|
+| `RAG_DEFAULT_WAHLPERIODE` | `20` | Default Wahlperiode filter for retrieval when none is passed. |
+
+---
+
+## Document indexing (RAG MVP)
+
+Index linked Drucksachen PDFs for a single Wahlperiode (default WP 20):
+
+```bash
+# 1) Build a local warehouse snapshot from MinIO
+python -m pipeline.cli materialize --output warehouse.duckdb
+
+# 2) Download PDFs transiently, extract/chunk/embed, store vectors
+python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
+```
+
+The extractor stores only chunk text + metadata + vectors in `embeddings.duckdb`.
+PDF bytes are processed in-memory and are not persisted.
+
+You can also trigger the GitHub workflow **Index Documents for RAG**.
 
 ---
 

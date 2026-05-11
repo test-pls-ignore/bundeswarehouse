@@ -15,6 +15,7 @@ type Results = {
   dokumente: DokumentItem[]
   aktivitaeten: AktivitaetItem[]
   contentMatches: ContentMatch[]
+  ragUnavailable: boolean
   counts: { vorgaenge: number; dokumente: number; aktivitaeten: number; contentMatches: number }
 }
 
@@ -40,7 +41,7 @@ export default function Home() {
 
   const handleLoadMore = async (category: Category) => {
     if (!results) return
-      setLoadingMore(prev => ({ ...prev, [category]: true }))
+    setLoadingMore(prev => ({ ...prev, [category]: true }))
     try {
       const more = await loadMore(category, activeQuery, results[category].length, wahlperiode)
       setResults(prev => prev ? { ...prev, [category]: [...prev[category], ...more] } : prev)
@@ -50,7 +51,7 @@ export default function Home() {
   }
 
   const totalHits = results
-    ? results.counts.vorgaenge + results.counts.dokumente + results.counts.aktivitaeten + results.counts.contentMatches
+    ? results.counts.vorgaenge + results.counts.dokumente + results.counts.aktivitaeten
     : 0
 
   return (
@@ -151,6 +152,11 @@ export default function Home() {
                 ))}
               </div>
             </section>
+          )}
+          {results.ragUnavailable && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              Dokumentinhalte sind derzeit nicht verfügbar.
+            </div>
           )}
 
           {results.vorgaenge.length > 0 && (

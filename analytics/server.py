@@ -5,12 +5,15 @@ Usage:
     uvicorn analytics.server:app --host 0.0.0.0 --port 8000
 """
 
+import logging
+
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from analytics.rag import RetrievalError, ask, retrieve_sources
 
 app = FastAPI(title="bundeswarehouse RAG API")
+logger = logging.getLogger(__name__)
 
 
 class AskRequest(BaseModel):
@@ -21,7 +24,7 @@ class AskRequest(BaseModel):
 class SearchRequest(BaseModel):
     question: str
     wahlperiode: int | None = None
-    top_k: int = 8
+    top_k: int = Field(default=8, ge=1, le=50)
 
 
 class Source(BaseModel):
@@ -59,7 +62,8 @@ def ask_endpoint(req: AskRequest):
     except RetrievalError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Unexpected error in /ask")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -70,4 +74,5 @@ def search_endpoint(req: SearchRequest):
     except RetrievalError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Unexpected error in /search")
+        raise HTTPException(status_code=500, detail="Internal server error") from e

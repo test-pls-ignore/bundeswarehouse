@@ -18,18 +18,25 @@ export type ContentMatch = {
     snippet: string
 }
 
+type ContentSearchResult = {
+    matches: ContentMatch[]
+    ragUnavailable: boolean
+}
+
 export async function searchBundestag(searchQuery: string, wahlperiode?: number) {
     if (!searchQuery) return {
         vorgaenge: [], dokumente: [], aktivitaeten: [],
         contentMatches: [],
+        ragUnavailable: false,
         counts: { vorgaenge: 0, dokumente: 0, aktivitaeten: 0, contentMatches: 0 }
     }
 
     const pattern = `%${searchQuery}%`
     const vWhere = wahlperiode ? ' AND wahlperiode = ?' : ''
     const vParams = wahlperiode ? [pattern, wahlperiode] : [pattern]
+    const contentSearchPromise = searchContentMatches(searchQuery, wahlperiode)
 
-    const [vorgaenge, dokumente, aktivitaeten, countV, countD, countA, contentMatches] = await Promise.all([
+    const [vorgaenge, dokumente, aktivitaeten, countV, countD, countA, contentResult] = await Promise.all([
         query(
             `SELECT id, vorgangstyp, titel, datum::VARCHAR AS datum
              FROM vorgang WHERE titel ILIKE ?${vWhere} LIMIT ${PAGE_SIZE}`,
@@ -48,24 +55,25 @@ export async function searchBundestag(searchQuery: string, wahlperiode?: number)
         query<{ n: number }>(`SELECT COUNT(*) AS n FROM vorgang WHERE titel ILIKE ?${vWhere}`, vParams),
         query<{ n: number }>(`SELECT COUNT(*) AS n FROM drucksache WHERE titel ILIKE ?${vWhere}`, vParams),
         query<{ n: number }>(`SELECT COUNT(*) AS n FROM aktivitaet WHERE person_name ILIKE ?${vWhere}`, vParams),
-        searchContentMatches(searchQuery, wahlperiode),
+        contentSearchPromise,
     ])
 
     return {
         vorgaenge,
         dokumente,
         aktivitaeten,
-        contentMatches,
+        contentMatches: contentResult.matches,
+        ragUnavailable: contentResult.ragUnavailable,
         counts: {
             vorgaenge: Number(countV[0]?.n ?? 0),
             dokumente: Number(countD[0]?.n ?? 0),
             aktivitaeten: Number(countA[0]?.n ?? 0),
-            contentMatches: contentMatches.length,
+            contentMatches: contentResult.matches.length,
         }
     }
 }
 
-async function searchContentMatches(searchQuery: string, wahlperiode?: number): Promise<ContentMatch[]> {
+async function searchContentMatches(searchQuery: string, wahlperiode?: number): Promise<ContentSearchResult> {
     try {
         const res = await fetch(`${RAG_API_URL}/search`, {
             method: 'POST',
@@ -76,11 +84,22 @@ async function searchContentMatches(searchQuery: string, wahlperiode?: number): 
                 top_k: 8,
             }),
         })
-        if (!res.ok) return []
+        if (!res.ok) {
+            return {
+                matches: [],
+                ragUnavailable: res.status === 503,
+            }
+        }
         const data = await res.json() as { sources?: ContentMatch[] }
-        return data.sources ?? []
+        return {
+            matches: data.sources ?? [],
+            ragUnavailable: false,
+        }
     } catch {
-        return []
+        return {
+            matches: [],
+            ragUnavailable: true,
+        }
     }
 }
 

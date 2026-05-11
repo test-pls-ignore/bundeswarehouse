@@ -48,7 +48,7 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
             doc_id      VARCHAR NOT NULL,
             chunk_index INTEGER NOT NULL,
             text        TEXT    NOT NULL,
-            embedding   FLOAT[384] NOT NULL,
+            embedding   FLOAT[384] NOT NULL
         )
     """)
     con.execute("""
@@ -60,7 +60,7 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
             last_error   VARCHAR,
             last_pdf_url VARCHAR,
             last_aktualisiert VARCHAR,
-            extracted_at TIMESTAMPTZ DEFAULT now(),
+            extracted_at TIMESTAMPTZ DEFAULT now()
         )
     """)
     for migration in [

@@ -62,20 +62,20 @@ export default function AnalyticsPage() {
             {data && !loading && (
                 <div className="w-full max-w-5xl space-y-6">
                     <Section title="Dokumentvolumen über Zeit">
-                        <SimpleTable rows={data.docVolumeByMonth.map((row) => [row.month, row.n.toLocaleString('de-DE')])} />
+                        <SimpleTable rows={data.docVolumeByMonth.map((row) => [row.month, row.count.toLocaleString('de-DE')])} />
                     </Section>
 
                     <Section title="Top-Themen/Schlagwörter (aus Titeln)">
-                        <SimpleTable rows={data.topThemes.map((row) => [row.label, row.n.toLocaleString('de-DE')])} />
+                        <SimpleTable rows={data.topThemes.map((row) => [row.label, row.count.toLocaleString('de-DE')])} />
                     </Section>
 
                     <Section title="Aktivitäts-/Typ-Verteilungen">
                         <div className="grid sm:grid-cols-2 gap-4">
                             <Card title="Aktivitätsarten">
-                                <SimpleTable rows={data.activityTypes.map((row) => [row.label, row.n.toLocaleString('de-DE')])} />
+                                <SimpleTable rows={data.activityTypes.map((row) => [row.label, row.count.toLocaleString('de-DE')])} />
                             </Card>
                             <Card title="Dokumenttypen">
-                                <SimpleTable rows={data.documentTypes.map((row) => [row.label, row.n.toLocaleString('de-DE')])} />
+                                <SimpleTable rows={data.documentTypes.map((row) => [row.label, row.count.toLocaleString('de-DE')])} />
                             </Card>
                         </div>
                     </Section>

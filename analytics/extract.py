@@ -69,11 +69,12 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
         "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_pdf_url VARCHAR",
         "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_aktualisiert VARCHAR",
     ]:
-        try:
-            con.execute(migration)
-        except Exception:
-            logger.debug("Skipping migration statement: %s", migration)
+        con.execute(migration)
     return con
+
+
+def _truncate_error(err: str, limit: int = 400) -> str:
+    return err if len(err) <= limit else f"{err[:limit]}..."
 
 
 def get_pending(
@@ -128,7 +129,7 @@ def get_pending(
             continue
         signature_changed = (
             entry["last_pdf_url"] != url
-            or (entry["last_aktualisiert"] or None) != (aktualisiert or None)
+            or entry["last_aktualisiert"] != aktualisiert
         )
         if entry["status"] == "ok" and not signature_changed:
             continue
@@ -205,7 +206,7 @@ async def process_batch(
             text = extract_text(pdf_bytes)
         except Exception as e:
             logger.warning("Extract failed %s: %s", doc_id, e)
-            log_rows.append((doc_id, "failed", 0, attempts, str(e)[:400], url, aktualisiert))
+            log_rows.append((doc_id, "failed", 0, attempts, _truncate_error(str(e)), url, aktualisiert))
             continue
 
         chunks = chunk_text(text)

@@ -72,6 +72,16 @@ jobs:
         if: ${{ inputs.dry_run != 'true' }}
         run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
 
+      - name: Upload embedding artifacts
+        if: ${{ inputs.dry_run != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-index-wp-20-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            warehouse.duckdb
+            embeddings.duckdb
+
       - name: Commit updated state.json
         if: ${{ inputs.dry_run != 'true' }}
         run: |

@@ -40,3 +40,12 @@ jobs:
 
       - name: Build document embeddings
         run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode ${{ inputs.wahlperiode }}
+
+      - name: Upload embedding artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-index-wp-${{ inputs.wahlperiode }}-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            warehouse.duckdb
+            embeddings.duckdb

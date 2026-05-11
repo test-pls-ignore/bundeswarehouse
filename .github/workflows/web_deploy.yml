@@ -47,7 +47,7 @@ jobs:
       - name: Package deployment tarball
         run: |
           rm -f /tmp/web-deploy-artifact.tar.gz
-          tar -czf /tmp/web-deploy-artifact.tar.gz \
+          tar -chzf /tmp/web-deploy-artifact.tar.gz \
             .next \
             public \
             package.json \

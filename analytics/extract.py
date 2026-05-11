@@ -196,6 +196,7 @@ async def process_batch(
     log_rows: list[tuple] = []
     all_chunks: list[str] = []
     chunk_meta: list[tuple[str, int]] = []  # (doc_id, local_chunk_index)
+    docs_to_replace: set[str] = set()
 
     for (doc_id, url, aktualisiert, previous_attempts), pdf_bytes in zip(batch, pdfs):
         attempts = previous_attempts + 1
@@ -217,6 +218,7 @@ async def process_batch(
         for i, chunk in enumerate(chunks):
             all_chunks.append(chunk)
             chunk_meta.append((doc_id, i))
+        docs_to_replace.add(doc_id)
         log_rows.append((doc_id, "ok", len(chunks), attempts, None, url, aktualisiert))
 
     if all_chunks:
@@ -226,7 +228,11 @@ async def process_batch(
 
     if chunk_rows:
         con.executemany(
-            "INSERT OR IGNORE INTO drucksache_chunks VALUES (?, ?, ?, ?, ?)",
+            "DELETE FROM drucksache_chunks WHERE doc_id = ?",
+            [(doc_id,) for doc_id in sorted(docs_to_replace)],
+        )
+        con.executemany(
+            "INSERT OR REPLACE INTO drucksache_chunks VALUES (?, ?, ?, ?, ?)",
             chunk_rows,
         )
     if log_rows:
@@ -239,7 +245,7 @@ async def process_batch(
             log_rows,
         )
 
-    ok = sum(1 for _, s, _ in log_rows if s == "ok")
+    ok = sum(1 for row in log_rows if row[1] == "ok")
     return ok, len(log_rows) - ok
 
 

@@ -138,6 +138,8 @@ The extractor stores only chunk text + metadata + vectors in `embeddings.duckdb`
 PDF bytes are processed in-memory and are not persisted.
 
 You can also trigger the GitHub workflow **Index Documents for RAG**.
+Each indexing workflow run now uploads `warehouse.duckdb` and `embeddings.duckdb`
+as a GitHub Actions artifact for explicit persistence and recovery.
 
 ---
 

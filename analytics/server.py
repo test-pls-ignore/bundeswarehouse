@@ -8,7 +8,7 @@ Usage:
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from analytics.rag import ask, retrieve_sources
+from analytics.rag import RetrievalError, ask, retrieve_sources
 
 app = FastAPI(title="bundeswarehouse RAG API")
 
@@ -56,6 +56,8 @@ def ask_endpoint(req: AskRequest):
     try:
         answer = ask(req.question, req.wahlperiode)
         return {"text": answer.text, "sources": answer.sources}
+    except RetrievalError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -65,5 +67,7 @@ def search_endpoint(req: SearchRequest):
     try:
         sources = retrieve_sources(req.question, top_k=req.top_k, wahlperiode=req.wahlperiode)
         return {"sources": sources}
+    except RetrievalError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

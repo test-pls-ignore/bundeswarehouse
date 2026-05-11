@@ -37,6 +37,10 @@ class Answer:
     sources: list[dict] = field(default_factory=list)
 
 
+class RetrievalError(RuntimeError):
+    pass
+
+
 def _get_model():
     from sentence_transformers import SentenceTransformer
     return SentenceTransformer(EMBED_MODEL)
@@ -46,8 +50,8 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
     try:
         con = duckdb.connect(WAREHOUSE_PATH, read_only=True)
         con.execute("LOAD vss")
-    except Exception:
-        return []
+    except Exception as e:
+        raise RetrievalError(f"Failed to open warehouse vector index at '{WAREHOUSE_PATH}': {e}") from e
 
     try:
         params: list = [q_vec, wahlperiode, wahlperiode]
@@ -68,8 +72,8 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
             ORDER BY score DESC
             LIMIT {top_k}
         """, params).fetchall()
-    except Exception:
-        return []
+    except Exception as e:
+        raise RetrievalError(f"Failed to query plenarprotokoll chunks: {e}") from e
     finally:
         con.close()
 
@@ -79,14 +83,16 @@ def _retrieve_plenarprotokoll(q_vec: list[float], top_k: int, wahlperiode: int |
 
 def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | None) -> list[dict]:
     if not Path(EMBEDDINGS_PATH).exists():
-        return []
+        raise RetrievalError(f"Embeddings database not found at '{EMBEDDINGS_PATH}'")
 
     try:
         con = duckdb.connect(EMBEDDINGS_PATH, read_only=True)
         con.execute("LOAD vss")
         con.execute(f"ATTACH '{WAREHOUSE_PATH}' AS warehouse (READ_ONLY)")
-    except Exception:
-        return []
+    except Exception as e:
+        raise RetrievalError(
+            f"Failed to open drucksache vector index at '{EMBEDDINGS_PATH}' (warehouse '{WAREHOUSE_PATH}'): {e}"
+        ) from e
 
     try:
         params: list = [q_vec, wahlperiode, wahlperiode]
@@ -108,8 +114,8 @@ def _retrieve_drucksachen(q_vec: list[float], top_k: int, wahlperiode: int | Non
             ORDER BY score DESC
             LIMIT {top_k}
         """, params).fetchall()
-    except Exception:
-        return []
+    except Exception as e:
+        raise RetrievalError(f"Failed to query drucksache chunks: {e}") from e
     finally:
         con.close()
 

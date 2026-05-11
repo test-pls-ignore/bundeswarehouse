@@ -159,7 +159,6 @@ jobs:
           DEPLOY_TMP_DIR="$(mktemp -d /tmp/web-deploy-extract.XXXXXX)"
           trap 'rm -rf "$DEPLOY_TMP_DIR"' EXIT
           tar -xzf "$DEPLOY_TARBALL" \
-            --no-absolute-names \
             --no-same-owner \
             --no-same-permissions \
             -C "$DEPLOY_TMP_DIR"

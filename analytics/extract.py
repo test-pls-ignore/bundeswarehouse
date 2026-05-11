@@ -75,7 +75,12 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
 
 
 def _truncate_error(err: str, limit: int = 400) -> str:
-    return err if len(err) <= limit else f"{err[:limit]}..."
+    """Truncate error text to at most `limit` characters including ellipsis."""
+    if len(err) <= limit:
+        return err
+    if limit <= 3:
+        return "." * limit
+    return f"{err[: limit - 3]}..."
 
 
 def get_pending(

@@ -14,6 +14,7 @@ from analytics.rag import RetrievalError, ask, retrieve_sources
 
 app = FastAPI(title="bundeswarehouse RAG API")
 logger = logging.getLogger(__name__)
+MAX_SEARCH_TOP_K = 50
 
 
 class AskRequest(BaseModel):
@@ -24,7 +25,7 @@ class AskRequest(BaseModel):
 class SearchRequest(BaseModel):
     question: str
     wahlperiode: int | None = None
-    top_k: int = Field(default=8, ge=1, le=50)
+    top_k: int = Field(default=8, ge=1, le=MAX_SEARCH_TOP_K)
 
 
 class Source(BaseModel):

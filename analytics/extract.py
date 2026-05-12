@@ -40,6 +40,17 @@ DEFAULT_WAHLPERIODE = 20
 DEFAULT_MAX_ATTEMPTS = 3
 
 
+def _migrate_extraction_log(con: duckdb.DuckDBPyConnection) -> None:
+    for migration in [
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS attempts INTEGER",
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_error VARCHAR",
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_pdf_url VARCHAR",
+        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_aktualisiert VARCHAR",
+    ]:
+        con.execute(migration)
+    con.execute("UPDATE extraction_log SET attempts = 0 WHERE attempts IS NULL")
+
+
 def setup_db(path: str) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(path)
     con.execute("INSTALL vss; LOAD vss")
@@ -64,13 +75,7 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
             extracted_at TIMESTAMPTZ DEFAULT now()
         )
     """)
-    for migration in [
-        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
-        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_error VARCHAR",
-        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_pdf_url VARCHAR",
-        "ALTER TABLE extraction_log ADD COLUMN IF NOT EXISTS last_aktualisiert VARCHAR",
-    ]:
-        con.execute(migration)
+    _migrate_extraction_log(con)
     return con
 
 

@@ -391,8 +391,6 @@ async def run(
                 "[%d/%d] ok=%d failed=%d (cumulative ok=%d failed=%d)",
                 min(i + batch_size, total), total, ok, failed, total_ok, total_failed,
             )
-            con.commit()
-
     if build_index:
         logger.info("Extraction done. Building HNSW index...")
         con.execute("""
@@ -437,7 +435,8 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
 
     for idx, shard_path in enumerate(shard_paths):
         alias = f"shard_{idx}"
-        con.execute(f"ATTACH '{shard_path}' AS {alias}")
+        quoted_shard_path = str(shard_path).replace("'", "''")
+        con.execute(f"ATTACH '{quoted_shard_path}' AS {alias}")
         con.execute(f"INSERT OR REPLACE INTO drucksache_chunks SELECT * FROM {alias}.drucksache_chunks")
         con.execute(f"INSERT OR REPLACE INTO extraction_log SELECT * FROM {alias}.extraction_log")
         con.execute(f"DETACH {alias}")

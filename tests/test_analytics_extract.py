@@ -4,7 +4,12 @@ from pathlib import Path
 
 import duckdb
 
-from analytics.extract import _migrate_extraction_log, get_pending
+from analytics.extract import (
+    _migrate_extraction_log,
+    build_partition_plan,
+    filter_pending_docs,
+    get_pending,
+)
 
 
 class TestAnalyticsExtractMigrations(unittest.TestCase):
@@ -78,6 +83,51 @@ class TestAnalyticsExtractMigrations(unittest.TestCase):
 
         self.assertEqual(pending, [("doc-1", "https://example.com/doc-1.pdf", "2026-01-01 00:00:00", 0)])
         con.close()
+
+
+class TestAnalyticsExtractPartitioning(unittest.TestCase):
+    def test_filter_pending_docs_applies_month_and_shard(self):
+        pending = [
+            ("doc-1", "https://example.com/1.pdf", "2026-01-01 00:00:00", 0),
+            ("doc-2", "https://example.com/2.pdf", "2026-01-02 00:00:00", 0),
+            ("doc-3", "https://example.com/3.pdf", "2026-01-03 00:00:00", 0),
+            ("doc-4", "https://example.com/4.pdf", "2026-02-01 00:00:00", 0),
+        ]
+
+        selected = filter_pending_docs(
+            pending,
+            updated_month="2026-01",
+            shard_index=1,
+            shard_count=2,
+        )
+
+        self.assertEqual(
+            selected,
+            [("doc-2", "https://example.com/2.pdf", "2026-01-02 00:00:00", 0)],
+        )
+
+    def test_build_partition_plan_splits_large_month_into_multiple_shards(self):
+        pending = [
+            ("doc-1", "https://example.com/1.pdf", "2026-01-01 00:00:00", 0),
+            ("doc-2", "https://example.com/2.pdf", "2026-01-02 00:00:00", 0),
+            ("doc-3", "https://example.com/3.pdf", "2026-01-03 00:00:00", 0),
+            ("doc-4", "https://example.com/4.pdf", "2026-02-01 00:00:00", 0),
+        ]
+
+        plan = build_partition_plan(pending, target_docs_per_partition=2)
+
+        self.assertEqual(plan["total_docs"], 4)
+        self.assertEqual(plan["partition_count"], 3)
+        self.assertEqual(
+            [partition["partition_id"] for partition in plan["partitions"]],
+            ["2026-01-s01", "2026-01-s02", "2026-02-s01"],
+        )
+        self.assertEqual(
+            [partition["doc_count"] for partition in plan["partitions"]],
+            [2, 1, 1],
+        )
+        self.assertEqual(plan["partitions"][0]["first_doc_id"], "doc-1")
+        self.assertEqual(plan["partitions"][0]["last_doc_id"], "doc-3")
 
 
 if __name__ == "__main__":

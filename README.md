@@ -130,7 +130,13 @@ Index linked Drucksachen PDFs for a single Wahlperiode (default WP 20):
 # 1) Build a local warehouse snapshot from MinIO
 python -m pipeline.cli materialize --output warehouse.duckdb
 
-# 2) Download PDFs transiently, extract/chunk/embed, store vectors
+# 2) (Optional) inspect the planned partitions before indexing
+python -m analytics.extract \
+  --warehouse warehouse.duckdb \
+  --wahlperiode 20 \
+  --plan-output plan.json
+
+# 3) Download PDFs transiently, extract/chunk/embed, store vectors
 python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
 ```
 
@@ -138,8 +144,22 @@ The extractor stores only chunk text + metadata + vectors in `embeddings.duckdb`
 PDF bytes are processed in-memory and are not persisted.
 
 You can also trigger the GitHub workflow **Index Documents for RAG**.
-Each indexing workflow run now uploads `warehouse.duckdb` and `embeddings.duckdb`
-as a GitHub Actions artifact for explicit persistence and recovery.
+It now:
+
+- materializes one warehouse snapshot,
+- plans pending documents into smaller partitions grouped by `aktualisiert` month,
+- further splits large months into stable document-level shards,
+- runs those partitions in parallel matrix jobs without building the HNSW index in every shard,
+- merges the shard databases once at the end and builds the final index exactly once.
+
+This is substantially faster than processing the whole `wp20` set in one job and
+keeps each worker small enough to stay well below the GitHub Actions 6-hour limit.
+Each partition database is also cached separately, so reruns can resume from the
+last shard state instead of starting the whole Wahlperiode over.
+
+Each indexing workflow run uploads `warehouse.duckdb`, `embeddings.duckdb`, and
+the generated `plan.json` as GitHub Actions artifacts for explicit persistence and
+inspection.
 
 ---
 

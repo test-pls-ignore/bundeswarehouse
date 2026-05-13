@@ -19,7 +19,9 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import logging
+import math
 from pathlib import Path
 
 import duckdb
@@ -38,6 +40,8 @@ DEFAULT_WORKERS = 8
 DEFAULT_BATCH = 256
 DEFAULT_WAHLPERIODE = 20
 DEFAULT_MAX_ATTEMPTS = 3
+DEFAULT_TARGET_DOCS_PER_PARTITION = 200
+PendingDoc = tuple[str, str, str | None, int]
 
 
 def _migrate_extraction_log(con: duckdb.DuckDBPyConnection) -> None:
@@ -93,7 +97,7 @@ def get_pending(
     con: duckdb.DuckDBPyConnection,
     wahlperiode: int | None,
     max_attempts: int,
-) -> list[tuple[str, str, str | None, int]]:
+) -> list[PendingDoc]:
     wh = duckdb.connect(warehouse, read_only=True)
     wp_filter = "AND wahlperiode = ?" if wahlperiode is not None else ""
     all_docs = wh.execute(
@@ -132,7 +136,7 @@ def get_pending(
         seen_urls.add(url)
         deduped_docs.append((doc_id, url, aktualisiert))
 
-    pending: list[tuple[str, str, str | None, int]] = []
+    pending: list[PendingDoc] = []
     for doc_id, url, aktualisiert in deduped_docs:
         entry = logs.get(doc_id)
         if entry is None:
@@ -158,6 +162,81 @@ def get_pending(
         wahlperiode if wahlperiode is not None else "ALL",
     )
     return pending
+
+
+def _month_key(aktualisiert: str | None) -> str:
+    if not aktualisiert:
+        return "unknown"
+    return aktualisiert[:7]
+
+
+def _pending_sort_key(doc: PendingDoc) -> tuple[str, str]:
+    doc_id, _, aktualisiert, _ = doc
+    return (aktualisiert or "", doc_id)
+
+
+def filter_pending_docs(
+    pending: list[PendingDoc],
+    updated_month: str | None = None,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
+) -> list[PendingDoc]:
+    filtered = pending
+    if updated_month is not None:
+        filtered = [doc for doc in filtered if _month_key(doc[2]) == updated_month]
+
+    if shard_count is None:
+        return filtered
+
+    if shard_count < 1:
+        raise ValueError("shard_count must be at least 1")
+    if shard_index is None:
+        raise ValueError("shard_index is required when shard_count is set")
+    if shard_index < 0 or shard_index >= shard_count:
+        raise ValueError("shard_index must be within the configured shard_count")
+
+    ordered = sorted(filtered, key=_pending_sort_key)
+    return [doc for idx, doc in enumerate(ordered) if idx % shard_count == shard_index]
+
+
+def build_partition_plan(
+    pending: list[PendingDoc],
+    target_docs_per_partition: int,
+) -> dict:
+    if target_docs_per_partition < 1:
+        raise ValueError("target_docs_per_partition must be at least 1")
+
+    partitions = []
+    pending_by_month: dict[str, list[PendingDoc]] = {}
+    for doc in pending:
+        pending_by_month.setdefault(_month_key(doc[2]), []).append(doc)
+
+    for updated_month in sorted(pending_by_month):
+        month_docs = sorted(pending_by_month[updated_month], key=_pending_sort_key)
+        shard_count = max(1, math.ceil(len(month_docs) / target_docs_per_partition))
+        for shard_index in range(shard_count):
+            shard_docs = filter_pending_docs(
+                month_docs,
+                shard_index=shard_index,
+                shard_count=shard_count,
+            )
+            if not shard_docs:
+                continue
+            partitions.append({
+                "partition_id": f"{updated_month}-s{shard_index + 1:02d}",
+                "updated_month": updated_month,
+                "shard_index": shard_index,
+                "shard_count": shard_count,
+                "doc_count": len(shard_docs),
+                "first_doc_id": shard_docs[0][0],
+                "last_doc_id": shard_docs[-1][0],
+            })
+
+    return {
+        "total_docs": len(pending),
+        "partition_count": len(partitions),
+        "partitions": partitions,
+    }
 
 
 def chunk_text(text: str) -> list[str]:
@@ -268,10 +347,27 @@ async def run(
     batch_size: int,
     wahlperiode: int | None,
     max_attempts: int,
+    updated_month: str | None = None,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
+    build_index: bool = True,
 ) -> None:
     con = setup_db(embeddings_path)
     model = SentenceTransformer(EMBED_MODEL)
     pending = get_pending(warehouse, con, wahlperiode=wahlperiode, max_attempts=max_attempts)
+    pending = filter_pending_docs(
+        pending,
+        updated_month=updated_month,
+        shard_index=shard_index,
+        shard_count=shard_count,
+    )
+    logger.info(
+        "Selected %d pending docs for month=%s shard=%s/%s",
+        len(pending),
+        updated_month if updated_month is not None else "ALL",
+        "ALL" if shard_index is None else shard_index + 1,
+        "ALL" if shard_count is None else shard_count,
+    )
 
     if not pending:
         logger.info("Nothing to do.")
@@ -295,14 +391,70 @@ async def run(
                 "[%d/%d] ok=%d failed=%d (cumulative ok=%d failed=%d)",
                 min(i + batch_size, total), total, ok, failed, total_ok, total_failed,
             )
+            con.commit()
 
-    logger.info("Extraction done. Building HNSW index...")
-    con.execute("""
-        CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
-        ON drucksache_chunks USING HNSW (embedding)
-        WITH (metric = 'cosine')
-    """)
-    logger.info("Index built. Total: ok=%d failed=%d", total_ok, total_failed)
+    if build_index:
+        logger.info("Extraction done. Building HNSW index...")
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
+            ON drucksache_chunks USING HNSW (embedding)
+            WITH (metric = 'cosine')
+        """)
+        logger.info("Index built. Total: ok=%d failed=%d", total_ok, total_failed)
+    else:
+        logger.info("Extraction done without building HNSW index. Total: ok=%d failed=%d", total_ok, total_failed)
+    con.close()
+
+
+def write_partition_plan(
+    warehouse: str,
+    embeddings_path: str,
+    wahlperiode: int | None,
+    max_attempts: int,
+    target_docs_per_partition: int,
+    output_path: str,
+) -> None:
+    con = setup_db(embeddings_path)
+    pending = get_pending(warehouse, con, wahlperiode=wahlperiode, max_attempts=max_attempts)
+    plan = build_partition_plan(pending, target_docs_per_partition=target_docs_per_partition)
+    Path(output_path).write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    logger.info(
+        "Wrote partition plan with %d docs across %d partitions to %s",
+        plan["total_docs"],
+        plan["partition_count"],
+        output_path,
+    )
+    con.close()
+
+
+def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
+    output_path = Path(embeddings_path)
+    if output_path.exists():
+        output_path.unlink()
+
+    shard_paths = sorted(
+        path for path in Path(merge_dir).rglob("*.duckdb")
+        if path.is_file() and path.resolve() != output_path.resolve()
+    )
+    con = setup_db(embeddings_path)
+
+    for idx, shard_path in enumerate(shard_paths):
+        alias = f"shard_{idx}"
+        con.execute(f"ATTACH '{shard_path}' AS {alias}")
+        con.execute(f"INSERT OR REPLACE INTO drucksache_chunks SELECT * FROM {alias}.drucksache_chunks")
+        con.execute(f"INSERT OR REPLACE INTO extraction_log SELECT * FROM {alias}.extraction_log")
+        con.execute(f"DETACH {alias}")
+
+    if shard_paths:
+        logger.info("Merged %d shard databases. Building HNSW index...", len(shard_paths))
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
+            ON drucksache_chunks USING HNSW (embedding)
+            WITH (metric = 'cosine')
+        """)
+        logger.info("Index built for merged embeddings database.")
+    else:
+        logger.info("No shard databases found in %s; created an empty embeddings database.", merge_dir)
     con.close()
 
 
@@ -312,6 +464,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)-8s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%SZ",
     )
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(description="Extract and embed Drucksachen PDFs.")
     parser.add_argument("--warehouse", default=WAREHOUSE_PATH)
     parser.add_argument("--embeddings", default=EMBEDDINGS_PATH)
@@ -324,7 +478,35 @@ def main() -> None:
         default=DEFAULT_MAX_ATTEMPTS,
         help="Skip unchanged failed docs after this many attempts (default: 3).",
     )
+    parser.add_argument("--updated-month", help="Restrict work to one aktualisiert month (YYYY-MM).")
+    parser.add_argument("--shard-index", type=int, help="0-based shard index within the selected month.")
+    parser.add_argument("--shard-count", type=int, help="Total shard count within the selected month.")
+    parser.add_argument("--skip-index", action="store_true", help="Skip HNSW index creation after extraction.")
+    parser.add_argument("--plan-output", help="Write a partition plan JSON file and exit.")
+    parser.add_argument(
+        "--target-docs-per-partition",
+        type=int,
+        default=DEFAULT_TARGET_DOCS_PER_PARTITION,
+        help="Maximum target size for each planned partition (default: 200).",
+    )
+    parser.add_argument("--merge-dir", help="Merge shard DuckDB files from this directory into --embeddings and build the HNSW index.")
     args = parser.parse_args()
+
+    if args.plan_output:
+        write_partition_plan(
+            args.warehouse,
+            args.embeddings,
+            args.wahlperiode,
+            args.max_attempts,
+            args.target_docs_per_partition,
+            args.plan_output,
+        )
+        return
+
+    if args.merge_dir:
+        merge_shard_dbs(args.embeddings, args.merge_dir)
+        return
+
     asyncio.run(
         run(
             args.warehouse,
@@ -333,6 +515,10 @@ def main() -> None:
             args.batch,
             args.wahlperiode,
             args.max_attempts,
+            updated_month=args.updated_month,
+            shard_index=args.shard_index,
+            shard_count=args.shard_count,
+            build_index=not args.skip_index,
         )
     )
 

@@ -432,10 +432,7 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
     if output_path.exists():
         output_path.unlink()
 
-    shard_paths = sorted(
-        path for path in Path(merge_dir).rglob("*.duckdb")
-        if path.is_file() and path.resolve() != output_path.resolve()
-    )
+    shard_paths = sorted(path for path in Path(merge_dir).rglob("*.duckdb") if path.is_file())
     con = setup_db(embeddings_path)
 
     for idx, shard_path in enumerate(shard_paths):

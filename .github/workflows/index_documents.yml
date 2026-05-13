@@ -136,7 +136,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Download partition plan and warehouse snapshot
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.3
         with:
           name: rag-index-plan-${{ github.run_id }}
 
@@ -199,12 +199,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Download warehouse snapshot and plan
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.3
         with:
           name: rag-index-plan-${{ github.run_id }}
 
       - name: Download partition artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v4.1.3
         with:
           path: shards
           pattern: rag-shard-*

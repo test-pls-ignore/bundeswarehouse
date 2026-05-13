@@ -8,10 +8,36 @@ on:
         required: false
         default: "20"
         type: string
+      target_docs_per_partition:
+        description: "Target number of pending documents per partition"
+        required: false
+        default: "200"
+        type: string
+      max_parallel:
+        description: "Maximum number of partition jobs to run in parallel"
+        required: false
+        default: "4"
+        type: string
+      workers:
+        description: "Concurrent PDF downloads per partition worker"
+        required: false
+        default: "12"
+        type: string
+      batch:
+        description: "Documents processed per extractor batch inside each partition"
+        required: false
+        default: "128"
+        type: string
+      max_attempts:
+        description: "Skip unchanged failed documents after this many attempts"
+        required: false
+        default: "3"
+        type: string
 
 jobs:
-  index-documents:
+  plan:
     runs-on: [self-hosted, vps]
+    timeout-minutes: 60
     permissions:
       contents: read
 
@@ -20,6 +46,10 @@ jobs:
       S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
       S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_partitions: ${{ steps.plan.outputs.has_partitions }}
 
     steps:
       - name: Checkout repository
@@ -37,8 +67,154 @@ jobs:
       - name: Materialize current warehouse snapshot
         run: python -m pipeline.cli materialize --output warehouse.duckdb
 
-      - name: Build document embeddings
-        run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode ${{ inputs.wahlperiode }}
+      - name: Plan pending document partitions
+        run: |
+          python -m analytics.extract \
+            --warehouse warehouse.duckdb \
+            --embeddings planner.duckdb \
+            --wahlperiode "${{ inputs.wahlperiode }}" \
+            --max-attempts "${{ inputs.max_attempts }}" \
+            --target-docs-per-partition "${{ inputs.target_docs_per_partition }}" \
+            --plan-output plan.json
+
+      - name: Export partition matrix
+        id: plan
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          plan = json.loads(Path("plan.json").read_text(encoding="utf-8"))
+          matrix = json.dumps(plan["partitions"], separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"matrix={matrix}\n")
+              fh.write(f"has_partitions={'true' if plan['partitions'] else 'false'}\n")
+          print(json.dumps(plan, indent=2))
+          PY
+
+      - name: Upload plan and warehouse snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-index-plan-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            warehouse.duckdb
+            plan.json
+
+  index-partitions:
+    needs: plan
+    if: needs.plan.outputs.has_partitions == 'true'
+    runs-on: [self-hosted, vps]
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        partition: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv (self-hosted)
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download partition plan and warehouse snapshot
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: rag-index-plan-${{ github.run_id }}
+
+      - name: Restore cached partition database
+        id: restore-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: partition.duckdb
+          key: rag-index-${{ inputs.wahlperiode }}-${{ matrix.partition.partition_id }}-${{ github.run_id }}
+          restore-keys: |
+            rag-index-${{ inputs.wahlperiode }}-${{ matrix.partition.partition_id }}-
+
+      - name: Build partition embeddings
+        run: |
+          python -m analytics.extract \
+            --warehouse warehouse.duckdb \
+            --embeddings partition.duckdb \
+            --wahlperiode "${{ inputs.wahlperiode }}" \
+            --max-attempts "${{ inputs.max_attempts }}" \
+            --workers "${{ inputs.workers }}" \
+            --batch "${{ inputs.batch }}" \
+            --updated-month "${{ matrix.partition.updated_month }}" \
+            --shard-index "${{ matrix.partition.shard_index }}" \
+            --shard-count "${{ matrix.partition.shard_count }}" \
+            --skip-index
+
+      - name: Upload partition artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-shard-${{ matrix.partition.partition_id }}
+          retention-days: 14
+          path: partition.duckdb
+
+      - name: Save cached partition database
+        if: always() && hashFiles('partition.duckdb') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: partition.duckdb
+          key: rag-index-${{ inputs.wahlperiode }}-${{ matrix.partition.partition_id }}-${{ github.run_id }}
+
+  merge:
+    needs: [plan, index-partitions]
+    if: needs.plan.outputs.has_partitions == 'true'
+    runs-on: [self-hosted, vps]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv (self-hosted)
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download warehouse snapshot and plan
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: rag-index-plan-${{ github.run_id }}
+
+      - name: Download partition artifacts
+        uses: actions/download-artifact@v4.1.3
+        with:
+          path: shards
+          pattern: rag-shard-*
+          merge-multiple: true
+
+      - name: Merge partition databases
+        run: |
+          python -m analytics.extract \
+            --embeddings embeddings.duckdb \
+            --merge-dir shards
 
       - name: Upload embedding artifacts
         uses: actions/upload-artifact@v4
@@ -48,3 +224,4 @@ jobs:
           path: |
             warehouse.duckdb
             embeddings.duckdb
+            plan.json

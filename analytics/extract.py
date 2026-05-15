@@ -434,16 +434,17 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
     con = setup_db(embeddings_path)
 
     try:
-        for idx, shard_path in enumerate(shard_paths, start=1):
-            alias = f"shard_{idx - 1}"
+        for idx, shard_path in enumerate(shard_paths):
+            alias = f"shard_{idx}"
             shard_path_str = str(shard_path)
             quoted_shard_path = shard_path_str.replace("'", "''")
             attached = False
             in_transaction = False
             operation = "attach shard"
             shard_error: RuntimeError | None = None
+            root_error: Exception | None = None
 
-            logger.info("Merging shard %d/%d: %s", idx, len(shard_paths), shard_path_str)
+            logger.info("Merging shard %d/%d: %s", idx + 1, len(shard_paths), shard_path_str)
             try:
                 con.execute(f"ATTACH '{quoted_shard_path}' AS {alias}")
                 attached = True
@@ -462,6 +463,7 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
                 con.execute("COMMIT")
                 in_transaction = False
             except Exception as exc:
+                root_error = exc
                 if in_transaction:
                     try:
                         con.execute("ROLLBACK")
@@ -471,7 +473,6 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
                 shard_error = RuntimeError(
                     f"Failed to {operation} for shard database '{shard_path_str}'"
                 )
-                raise shard_error from exc
             finally:
                 if attached:
                     try:
@@ -482,6 +483,8 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
                             raise RuntimeError(
                                 f"Failed to detach shard database '{shard_path_str}'"
                             ) from detach_exc
+            if shard_error is not None:
+                raise shard_error from root_error
 
         if shard_paths:
             logger.info("Merged %d shard databases. Building HNSW index...", len(shard_paths))

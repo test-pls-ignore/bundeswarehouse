@@ -151,7 +151,7 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
             merge_dir = Path(tmpdir) / "shards"
             merge_dir.mkdir()
             shard_path = merge_dir / "part-01.duckdb"
-            shard_path.write_text("not-a-real-duckdb", encoding="utf-8")
+            shard_path.touch()
             output_path = Path(tmpdir) / "embeddings.duckdb"
             output_path.write_text("old-db", encoding="utf-8")
 

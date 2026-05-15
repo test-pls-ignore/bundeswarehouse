@@ -443,6 +443,7 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
 
     if shard_paths:
         logger.info("Merged %d shard databases. Building HNSW index...", len(shard_paths))
+        con.execute("SET hnsw_enable_experimental_persistence = true")
         con.execute("""
             CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
             ON drucksache_chunks USING HNSW (embedding)

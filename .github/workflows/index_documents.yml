@@ -33,6 +33,11 @@ on:
         required: false
         default: "3"
         type: string
+      partition_limit:
+        description: "Limit planned partitions for fast test runs (0 = all)"
+        required: false
+        default: "0"
+        type: string
 
 jobs:
   plan:
@@ -86,10 +91,19 @@ jobs:
           from pathlib import Path
 
           plan = json.loads(Path("plan.json").read_text(encoding="utf-8"))
-          matrix = json.dumps(plan["partitions"], separators=(",", ":"))
+          partitions = plan["partitions"]
+          partition_limit = int("${{ inputs.partition_limit }}")
+          if partition_limit < 0:
+              raise ValueError("partition_limit must be >= 0")
+          if partition_limit > 0:
+              partitions = partitions[:partition_limit]
+              plan["partitions"] = partitions
+              plan["partition_count"] = len(partitions)
+              plan["total_docs"] = sum(partition["doc_count"] for partition in partitions)
+          matrix = json.dumps(partitions, separators=(",", ":"))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"matrix={matrix}\n")
-              fh.write(f"has_partitions={'true' if plan['partitions'] else 'false'}\n")
+              fh.write(f"has_partitions={'true' if partitions else 'false'}\n")
           print(json.dumps(plan, indent=2))
           PY
 
@@ -149,6 +163,21 @@ jobs:
           restore-keys: |
             rag-index-${{ inputs.wahlperiode }}-${{ matrix.partition.partition_id }}-
 
+      - name: Validate cached partition database
+        id: validate-cache
+        if: steps.restore-cache.outputs.cache-hit == 'true' && hashFiles('partition.duckdb') != ''
+        continue-on-error: true
+        run: |
+          python -m analytics.extract \
+            --embeddings partition.duckdb \
+            --validate-db
+
+      - name: Discard invalid cached partition database
+        if: steps.validate-cache.outcome == 'failure'
+        run: |
+          echo "Cached partition database is invalid; rebuilding from scratch."
+          rm -f partition.duckdb
+
       - name: Build partition embeddings
         run: |
           python -m analytics.extract \
@@ -163,15 +192,26 @@ jobs:
             --shard-count "${{ matrix.partition.shard_count }}" \
             --skip-index
 
+      - name: Validate generated partition database
+        run: |
+          python -m analytics.extract \
+            --embeddings partition.duckdb \
+            --validate-db
+
+      - name: Prepare partition artifact
+        run: |
+          mkdir -p shard-artifact
+          cp partition.duckdb "shard-artifact/${{ matrix.partition.partition_id }}.duckdb"
+
       - name: Upload partition artifact
         uses: actions/upload-artifact@v4
         with:
           name: rag-shard-${{ matrix.partition.partition_id }}
           retention-days: 14
-          path: partition.duckdb
+          path: shard-artifact/${{ matrix.partition.partition_id }}.duckdb
 
       - name: Save cached partition database
-        if: always() && hashFiles('partition.duckdb') != ''
+        if: success() && hashFiles('partition.duckdb') != ''
         uses: actions/cache/save@v4
         with:
           path: partition.duckdb

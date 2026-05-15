@@ -11,6 +11,7 @@ from analytics.extract import (
     filter_pending_docs,
     get_pending,
     merge_shard_dbs,
+    validate_embeddings_db,
 )
 
 
@@ -133,6 +134,39 @@ class TestAnalyticsExtractPartitioning(unittest.TestCase):
 
 
 class TestAnalyticsExtractMerge(unittest.TestCase):
+    def test_validate_embeddings_db_accepts_valid_database(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "embeddings.duckdb"
+            con = duckdb.connect(str(db_path))
+            con.execute("""
+                CREATE TABLE drucksache_chunks (
+                    chunk_id VARCHAR PRIMARY KEY,
+                    doc_id VARCHAR NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    embedding FLOAT[384] NOT NULL
+                )
+            """)
+            con.execute("""
+                CREATE TABLE extraction_log (
+                    doc_id VARCHAR PRIMARY KEY,
+                    status VARCHAR NOT NULL
+                )
+            """)
+            con.close()
+
+            validate_embeddings_db(str(db_path))
+
+    def test_validate_embeddings_db_rejects_invalid_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "invalid.duckdb"
+            db_path.write_text("not-a-duckdb-file", encoding="utf-8")
+
+            with self.assertRaises(RuntimeError) as ctx:
+                validate_embeddings_db(str(db_path))
+
+            self.assertIn(str(db_path), str(ctx.exception))
+
     def test_merge_shard_dbs_reports_shard_path_and_rolls_back(self):
         class FakeConnection:
             def __init__(self):
@@ -156,7 +190,9 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
             output_path.write_text("old-db", encoding="utf-8")
 
             fake_con = FakeConnection()
-            with patch("analytics.extract.setup_db", return_value=fake_con):
+            with patch("analytics.extract.setup_db", return_value=fake_con), patch(
+                "analytics.extract.validate_embeddings_db"
+            ):
                 with self.assertRaises(RuntimeError) as ctx:
                     merge_shard_dbs(str(output_path), str(merge_dir))
 

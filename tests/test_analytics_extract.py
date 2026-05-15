@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import duckdb
 
@@ -9,6 +10,7 @@ from analytics.extract import (
     build_partition_plan,
     filter_pending_docs,
     get_pending,
+    merge_shard_dbs,
 )
 
 
@@ -128,6 +130,40 @@ class TestAnalyticsExtractPartitioning(unittest.TestCase):
         )
         self.assertEqual(plan["partitions"][0]["first_doc_id"], "doc-1")
         self.assertEqual(plan["partitions"][0]["last_doc_id"], "doc-3")
+
+
+class TestAnalyticsExtractMerge(unittest.TestCase):
+    def test_merge_shard_dbs_reports_shard_path_and_rolls_back(self):
+        class FakeConnection:
+            def __init__(self):
+                self.commands: list[str] = []
+
+            def execute(self, sql: str):
+                self.commands.append(sql)
+                if "INSERT OR REPLACE INTO drucksache_chunks" in sql:
+                    raise duckdb.IOException("Corrupt database file")
+                return self
+
+            def close(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            merge_dir = Path(tmpdir) / "shards"
+            merge_dir.mkdir()
+            shard_path = merge_dir / "part-01.duckdb"
+            shard_path.write_text("not-a-real-duckdb", encoding="utf-8")
+            output_path = Path(tmpdir) / "embeddings.duckdb"
+            output_path.write_text("old-db", encoding="utf-8")
+
+            fake_con = FakeConnection()
+            with patch("analytics.extract.setup_db", return_value=fake_con):
+                with self.assertRaises(RuntimeError) as ctx:
+                    merge_shard_dbs(str(output_path), str(merge_dir))
+
+            self.assertIn(str(shard_path), str(ctx.exception))
+            self.assertIn("copy drucksache_chunks", str(ctx.exception))
+            self.assertIn("ROLLBACK", fake_con.commands)
+            self.assertIn("DETACH shard_0", fake_con.commands)
 
 
 if __name__ == "__main__":

@@ -157,6 +157,49 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
 
             validate_embeddings_db(str(db_path))
 
+    def test_validate_embeddings_db_requires_full_table_reads(self):
+        class FakeResult:
+            def __init__(self):
+                self.calls = 0
+
+            def fetchmany(self, _size: int):
+                self.calls += 1
+                if self.calls == 1:
+                    return [("row",)]
+                return []
+
+        class FakeConnection:
+            def __init__(self):
+                self.commands: list[str] = []
+                self.closed = False
+                self.result = FakeResult()
+
+            def execute(self, sql: str):
+                self.commands.append(sql)
+                if "information_schema.tables" in sql:
+                    return self
+                if sql == "SELECT * FROM drucksache_chunks":
+                    return self.result
+                if sql == "SELECT * FROM extraction_log":
+                    raise duckdb.IOException("Corrupt database file")
+                raise AssertionError(f"Unexpected SQL: {sql}")
+
+            def fetchall(self):
+                return [("drucksache_chunks",), ("extraction_log",)]
+
+            def close(self):
+                self.closed = True
+
+        fake_con = FakeConnection()
+        with patch("analytics.extract.duckdb.connect", return_value=fake_con):
+            with self.assertRaises(RuntimeError) as ctx:
+                validate_embeddings_db("corrupt.duckdb")
+
+        self.assertIn("corrupt.duckdb", str(ctx.exception))
+        self.assertIn("SELECT * FROM drucksache_chunks", fake_con.commands)
+        self.assertIn("SELECT * FROM extraction_log", fake_con.commands)
+        self.assertTrue(fake_con.closed)
+
     def test_validate_embeddings_db_rejects_invalid_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "invalid.duckdb"

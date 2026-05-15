@@ -98,8 +98,10 @@ def validate_embeddings_db(path: str) -> None:
         if missing_tables:
             raise RuntimeError(f"Missing required tables: {', '.join(missing_tables)}")
 
-        con.execute("SELECT COUNT(*) FROM drucksache_chunks").fetchone()
-        con.execute("SELECT COUNT(*) FROM extraction_log").fetchone()
+        for table_name in ("drucksache_chunks", "extraction_log"):
+            result = con.execute(f"SELECT * FROM {table_name}")
+            while result.fetchmany(1024):
+                pass
     except Exception as exc:
         raise RuntimeError(f"Embeddings database validation failed for '{path}'") from exc
     finally:

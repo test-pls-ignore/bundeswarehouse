@@ -83,6 +83,30 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
     return con
 
 
+def validate_embeddings_db(path: str) -> None:
+    con: duckdb.DuckDBPyConnection | None = None
+    try:
+        con = duckdb.connect(path, read_only=True)
+        table_names = {
+            row[0]
+            for row in con.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+            ).fetchall()
+        }
+        required_tables = {"drucksache_chunks", "extraction_log"}
+        missing_tables = sorted(required_tables - table_names)
+        if missing_tables:
+            raise RuntimeError(f"Missing required tables: {', '.join(missing_tables)}")
+
+        con.execute("SELECT COUNT(*) FROM drucksache_chunks").fetchone()
+        con.execute("SELECT COUNT(*) FROM extraction_log").fetchone()
+    except Exception as exc:
+        raise RuntimeError(f"Embeddings database validation failed for '{path}'") from exc
+    finally:
+        if con is not None:
+            con.close()
+
+
 def _truncate_error(err: str, limit: int = 400) -> str:
     """Truncate error text to at most `limit` characters including ellipsis."""
     if len(err) <= limit:
@@ -446,6 +470,9 @@ def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
 
             logger.info("Merging shard %d/%d: %s", idx + 1, len(shard_paths), shard_path_str)
             try:
+                operation = "validate shard"
+                validate_embeddings_db(shard_path_str)
+
                 con.execute(f"ATTACH '{quoted_shard_path}' AS {alias}")
                 attached = True
 
@@ -525,6 +552,7 @@ def main() -> None:
     parser.add_argument("--shard-index", type=int, help="0-based shard index within the selected month.")
     parser.add_argument("--shard-count", type=int, help="Total shard count within the selected month.")
     parser.add_argument("--skip-index", action="store_true", help="Skip HNSW index creation after extraction.")
+    parser.add_argument("--validate-db", action="store_true", help="Validate --embeddings DuckDB file and exit.")
     parser.add_argument("--plan-output", help="Write a partition plan JSON file and exit.")
     parser.add_argument(
         "--target-docs-per-partition",
@@ -548,6 +576,11 @@ def main() -> None:
 
     if args.merge_dir:
         merge_shard_dbs(args.embeddings, args.merge_dir)
+        return
+
+    if args.validate_db:
+        validate_embeddings_db(args.embeddings)
+        logger.info("Embeddings database validation passed: %s", args.embeddings)
         return
 
     asyncio.run(

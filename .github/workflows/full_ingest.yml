@@ -34,22 +34,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        if: ${{ contains(runner.name, 'GitHub Actions') }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Set up Python virtualenv (self-hosted)
-        if: "contains(runner.labels, 'self-hosted')"
+      - name: Set up Python virtualenv
         run: |
           python3 --version
           python3 -m venv .venv
-          .venv/bin/python3 -m ensurepip --upgrade
+          .venv/bin/python -m ensurepip --upgrade
+          .venv/bin/python -m pip install --upgrade pip
           echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
 
       - name: Install dependencies
-        run: .venv/bin/pip install -r requirements.txt
+        run: .venv/bin/python -m pip install -r requirements.txt
 
       - name: Validate Bundestag API key is present
         run: |
@@ -59,19 +53,19 @@ jobs:
           fi
 
       - name: Check S3 connection
-        run: python -m pipeline.cli check-connection
+        run: .venv/bin/python -m pipeline.cli check-connection
 
       - name: Run full ingest
         if: ${{ inputs.dry_run != 'true' }}
-        run: python -m pipeline.cli full-load
+        run: .venv/bin/python -m pipeline.cli full-load
 
       - name: Materialize warehouse snapshot
         if: ${{ inputs.dry_run != 'true' }}
-        run: python -m pipeline.cli materialize --output warehouse.duckdb
+        run: .venv/bin/python -m pipeline.cli materialize --output warehouse.duckdb
 
       - name: Build Wahlperiode document embeddings
         if: ${{ inputs.dry_run != 'true' }}
-        run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
+        run: .venv/bin/python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
 
       - name: Upload embedding artifacts
         if: ${{ inputs.dry_run != 'true' }}

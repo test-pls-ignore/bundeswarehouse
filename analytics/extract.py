@@ -451,81 +451,52 @@ def write_partition_plan(
     con.close()
 
 
-def merge_shard_dbs(embeddings_path: str, merge_dir: str) -> None:
+def export_shard_parquet(embeddings_path: str, output_dir: str, prefix: str) -> None:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    chunks_path = str(out / f"{prefix}_chunks.parquet")
+    log_path = str(out / f"{prefix}_log.parquet")
+    con = duckdb.connect(embeddings_path, read_only=True)
+    try:
+        con.execute(f"COPY drucksache_chunks TO '{chunks_path}' (FORMAT PARQUET)")
+        con.execute(f"COPY extraction_log TO '{log_path}' (FORMAT PARQUET)")
+    finally:
+        con.close()
+    logger.info("Exported shard to %s, %s", chunks_path, log_path)
+
+
+def merge_shard_parquets(embeddings_path: str, merge_dir: str) -> None:
     output_path = Path(embeddings_path)
     if output_path.exists():
         output_path.unlink()
 
-    shard_paths = sorted(path for path in Path(merge_dir).rglob("*.duckdb") if path.is_file())
+    merge_path = Path(merge_dir)
+    chunks_files = sorted(merge_path.glob("*_chunks.parquet"))
+
     con = setup_db(embeddings_path)
-
     try:
-        for idx, shard_path in enumerate(shard_paths):
-            alias = f"shard_{idx}"
-            shard_path_str = str(shard_path)
-            quoted_shard_path = shard_path_str.replace("'", "''")
-            attached = False
-            in_transaction = False
-            operation = "attach shard"
-            shard_error: RuntimeError | None = None
-            root_error: Exception | None = None
+        if not chunks_files:
+            logger.info("No shard Parquet files found in %s; created an empty embeddings database.", merge_dir)
+            return
 
-            logger.info("Merging shard %d/%d: %s", idx + 1, len(shard_paths), shard_path_str)
-            try:
-                operation = "validate shard"
-                validate_embeddings_db(shard_path_str)
+        chunks_glob = str(merge_path / "*_chunks.parquet")
+        log_glob = str(merge_path / "*_log.parquet")
 
-                con.execute(f"ATTACH '{quoted_shard_path}' AS {alias}")
-                attached = True
+        logger.info("Merging %d chunk shards from %s...", len(chunks_files), merge_dir)
+        con.execute(f"INSERT OR REPLACE INTO drucksache_chunks SELECT * FROM read_parquet('{chunks_glob}')")
 
-                operation = "begin transaction"
-                con.execute("BEGIN TRANSACTION")
-                in_transaction = True
+        log_files = sorted(merge_path.glob("*_log.parquet"))
+        if log_files:
+            con.execute(f"INSERT OR REPLACE INTO extraction_log SELECT * FROM read_parquet('{log_glob}')")
 
-                operation = "copy drucksache_chunks"
-                con.execute(f"INSERT OR REPLACE INTO drucksache_chunks SELECT * FROM {alias}.drucksache_chunks")
-
-                operation = "copy extraction_log"
-                con.execute(f"INSERT OR REPLACE INTO extraction_log SELECT * FROM {alias}.extraction_log")
-
-                operation = "commit transaction"
-                con.execute("COMMIT")
-                in_transaction = False
-            except Exception as exc:
-                root_error = exc
-                if in_transaction:
-                    try:
-                        con.execute("ROLLBACK")
-                    except Exception:
-                        logger.exception("Rollback failed for shard %s", shard_path_str)
-                logger.exception("Failed to %s for shard %s", operation, shard_path_str)
-                shard_error = RuntimeError(
-                    f"Failed to {operation} for shard database '{shard_path_str}'"
-                )
-            finally:
-                if attached:
-                    try:
-                        con.execute(f"DETACH {alias}")
-                    except Exception as detach_exc:
-                        logger.exception("Failed to detach shard %s", shard_path_str)
-                        if shard_error is None:
-                            raise RuntimeError(
-                                f"Failed to detach shard database '{shard_path_str}'"
-                            ) from detach_exc
-            if shard_error is not None:
-                raise shard_error from root_error
-
-        if shard_paths:
-            logger.info("Merged %d shard databases. Building HNSW index...", len(shard_paths))
-            con.execute("SET hnsw_enable_experimental_persistence = true")
-            con.execute("""
-                CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
-                ON drucksache_chunks USING HNSW (embedding)
-                WITH (metric = 'cosine')
-            """)
-            logger.info("Index built for merged embeddings database.")
-        else:
-            logger.info("No shard databases found in %s; created an empty embeddings database.", merge_dir)
+        logger.info("Building HNSW index over %d merged shards...", len(chunks_files))
+        con.execute("SET hnsw_enable_experimental_persistence = true")
+        con.execute("""
+            CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
+            ON drucksache_chunks USING HNSW (embedding)
+            WITH (metric = 'cosine')
+        """)
+        logger.info("Index built for merged embeddings database.")
     finally:
         con.close()
 
@@ -562,7 +533,9 @@ def main() -> None:
         default=DEFAULT_TARGET_DOCS_PER_PARTITION,
         help="Maximum target size for each planned partition (default: 200).",
     )
-    parser.add_argument("--merge-dir", help="Merge shard DuckDB files from this directory into --embeddings and build the HNSW index.")
+    parser.add_argument("--merge-dir", help="Merge shard Parquet files from this directory into --embeddings and build the HNSW index.")
+    parser.add_argument("--export-parquet", metavar="DIR", help="Export shard to Parquet files in DIR and exit.")
+    parser.add_argument("--export-parquet-prefix", metavar="PREFIX", help="Filename prefix for --export-parquet output (default: embeddings stem).")
     args = parser.parse_args()
 
     if args.plan_output:
@@ -576,8 +549,13 @@ def main() -> None:
         )
         return
 
+    if args.export_parquet:
+        prefix = args.export_parquet_prefix or Path(args.embeddings).stem
+        export_shard_parquet(args.embeddings, args.export_parquet, prefix)
+        return
+
     if args.merge_dir:
-        merge_shard_dbs(args.embeddings, args.merge_dir)
+        merge_shard_parquets(args.embeddings, args.merge_dir)
         return
 
     if args.validate_db:

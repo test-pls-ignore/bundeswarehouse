@@ -8,9 +8,10 @@ import duckdb
 from analytics.extract import (
     _migrate_extraction_log,
     build_partition_plan,
+    export_shard_parquet,
     filter_pending_docs,
     get_pending,
-    merge_shard_dbs,
+    merge_shard_parquets,
     validate_embeddings_db,
 )
 
@@ -210,39 +211,75 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
 
             self.assertIn(str(db_path), str(ctx.exception))
 
-    def test_merge_shard_dbs_reports_shard_path_and_rolls_back(self):
-        class FakeConnection:
-            def __init__(self):
-                self.commands: list[str] = []
+    def _make_shard_parquet(self, directory: Path, prefix: str, doc_ids: list[str]) -> None:
+        shard_path = directory / f"{prefix}.duckdb"
+        con = duckdb.connect(str(shard_path))
+        con.execute("INSTALL vss; LOAD vss")
+        con.execute("""
+            CREATE TABLE drucksache_chunks (
+                chunk_id VARCHAR PRIMARY KEY,
+                doc_id VARCHAR NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                embedding FLOAT[384] NOT NULL
+            )
+        """)
+        con.execute("""
+            CREATE TABLE extraction_log (
+                doc_id VARCHAR PRIMARY KEY,
+                status VARCHAR NOT NULL,
+                chunks INTEGER,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error VARCHAR,
+                last_pdf_url VARCHAR,
+                last_aktualisiert VARCHAR,
+                extracted_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        for doc_id in doc_ids:
+            emb = [0.0] * 384
+            con.execute(
+                "INSERT INTO drucksache_chunks VALUES (?, ?, ?, ?, ?)",
+                (f"{doc_id}_0", doc_id, 0, "sample text", emb),
+            )
+            con.execute(
+                "INSERT INTO extraction_log(doc_id, status, chunks) VALUES (?, 'ok', 1)",
+                (doc_id,),
+            )
+        con.close()
+        export_shard_parquet(str(shard_path), str(directory), prefix)
+        shard_path.unlink()
 
-            def execute(self, sql: str):
-                self.commands.append(sql)
-                if "INSERT OR REPLACE INTO drucksache_chunks" in sql:
-                    raise duckdb.IOException("Corrupt database file")
-                return self
-
-            def close(self):
-                return None
-
+    def test_merge_shard_parquets_merges_data_from_multiple_shards(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             merge_dir = Path(tmpdir) / "shards"
             merge_dir.mkdir()
-            shard_path = merge_dir / "part-01.duckdb"
-            shard_path.touch()
+            self._make_shard_parquet(merge_dir, "2024-01-s01", ["doc-a", "doc-b"])
+            self._make_shard_parquet(merge_dir, "2024-01-s02", ["doc-c"])
+
             output_path = Path(tmpdir) / "embeddings.duckdb"
-            output_path.write_text("old-db", encoding="utf-8")
+            merge_shard_parquets(str(output_path), str(merge_dir))
 
-            fake_con = FakeConnection()
-            with patch("analytics.extract.setup_db", return_value=fake_con), patch(
-                "analytics.extract.validate_embeddings_db"
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    merge_shard_dbs(str(output_path), str(merge_dir))
+            con = duckdb.connect(str(output_path), read_only=True)
+            doc_ids = {r[0] for r in con.execute("SELECT doc_id FROM extraction_log").fetchall()}
+            chunk_ids = {r[0] for r in con.execute("SELECT chunk_id FROM drucksache_chunks").fetchall()}
+            con.close()
 
-            self.assertIn(str(shard_path), str(ctx.exception))
-            self.assertIn("copy drucksache_chunks", str(ctx.exception))
-            self.assertIn("ROLLBACK", fake_con.commands)
-            self.assertIn("DETACH shard_0", fake_con.commands)
+        self.assertEqual(doc_ids, {"doc-a", "doc-b", "doc-c"})
+        self.assertEqual(chunk_ids, {"doc-a_0", "doc-b_0", "doc-c_0"})
+
+    def test_merge_shard_parquets_creates_empty_db_when_no_shards(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            merge_dir = Path(tmpdir) / "shards"
+            merge_dir.mkdir()
+            output_path = Path(tmpdir) / "embeddings.duckdb"
+            merge_shard_parquets(str(output_path), str(merge_dir))
+
+            con = duckdb.connect(str(output_path), read_only=True)
+            count = con.execute("SELECT COUNT(*) FROM drucksache_chunks").fetchone()[0]
+            con.close()
+
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

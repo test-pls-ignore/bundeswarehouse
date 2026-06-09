@@ -26,7 +26,7 @@ jobs:
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
       BUNDESTAG_API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}
       DIP_USER_AGENT: "Mozilla/5.0 (compatible; bundeswarehouse/1.0; +https://github.com/test-pls-ignore/bundeswarehouse)"
-      DIP_REQUEST_DELAY: "2.5"
+      DIP_REQUEST_DELAY: "1.0"
       DIP_MAX_RETRIES: "12"
       DIP_RETRY_BACKOFF_MAX: "900"
 

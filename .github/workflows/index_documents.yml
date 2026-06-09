@@ -198,17 +198,19 @@ jobs:
             --embeddings partition.duckdb \
             --validate-db
 
-      - name: Prepare partition artifact
+      - name: Export partition to Parquet
         run: |
-          mkdir -p shard-artifact
-          cp partition.duckdb "shard-artifact/${{ matrix.partition.partition_id }}.duckdb"
+          python -m analytics.extract \
+            --embeddings partition.duckdb \
+            --export-parquet shard-artifact/ \
+            --export-parquet-prefix "${{ matrix.partition.partition_id }}"
 
       - name: Upload partition artifact
         uses: actions/upload-artifact@v4
         with:
           name: rag-shard-${{ matrix.partition.partition_id }}
           retention-days: 14
-          path: shard-artifact/${{ matrix.partition.partition_id }}.duckdb
+          path: shard-artifact/
 
       - name: Save cached partition database
         if: success() && hashFiles('partition.duckdb') != ''
@@ -249,39 +251,6 @@ jobs:
           path: shards
           pattern: rag-shard-*
           merge-multiple: true
-
-      - name: Validate downloaded shard databases
-        id: validate-shards
-        continue-on-error: true
-        run: |
-          set +e
-          failed=0
-          for shard in shards/*.duckdb; do
-            [ -f "$shard" ] || continue
-            echo "Validating: $shard"
-            python -m analytics.extract --embeddings "$shard" --validate-db
-            if [ $? -ne 0 ]; then
-              echo "::warning::Shard validation failed: $shard"
-              failed=1
-            fi
-          done
-          exit $failed
-
-      - name: Discard corrupt shard databases
-        if: steps.validate-shards.outcome == 'failure'
-        run: |
-          set +e
-          removed=0
-          for shard in shards/*.duckdb; do
-            [ -f "$shard" ] || continue
-            python -m analytics.extract --embeddings "$shard" --validate-db > /dev/null 2>&1
-            if [ $? -ne 0 ]; then
-              echo "Removing corrupt shard: $shard"
-              rm -f "$shard"
-              removed=$((removed + 1))
-            fi
-          done
-          echo "::warning::Removed $removed corrupt shard(s). Merge will proceed with remaining valid shards."
 
       - name: Merge partition databases
         run: |

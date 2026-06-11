@@ -138,6 +138,51 @@ def upload_file(
             time.sleep(wait)
 
 
+def download_file(
+    client,
+    bucket: str,
+    key: str,
+    local_path: str,
+    retries: int = 3,
+    backoff: float = 2.0,
+) -> bool:
+    """Download an S3 object to a local file (streaming). Returns False if the key does not exist."""
+    for attempt in range(1, retries + 1):
+        try:
+            with open(local_path, "wb") as fh:
+                client.download_fileobj(bucket, key, fh)
+            logger.info("Downloaded s3://%s/%s → '%s'", bucket, key, local_path)
+            return True
+        except ClientError as exc:
+            error_code = exc.response["Error"]["Code"]
+            if error_code in ("404", "NoSuchKey"):
+                return False
+            if attempt == retries:
+                raise
+            wait = backoff ** attempt
+            logger.warning(
+                "Download attempt %d/%d failed (%s). Retrying in %.1fs.",
+                attempt,
+                retries,
+                exc,
+                wait,
+            )
+            time.sleep(wait)
+        except EndpointConnectionError as exc:
+            if attempt == retries:
+                raise
+            wait = backoff ** attempt
+            logger.warning(
+                "Download attempt %d/%d failed (%s). Retrying in %.1fs.",
+                attempt,
+                retries,
+                exc,
+                wait,
+            )
+            time.sleep(wait)
+    return False
+
+
 def download_bytes(
     client,
     bucket: str,

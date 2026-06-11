@@ -15,7 +15,7 @@ on:
 jobs:
   full-ingest:
     runs-on: [self-hosted, vps]
-    timeout-minutes: 1440  # 24 hours; pipeline is resumable so re-runs pick up where they left off
+    timeout-minutes: 2880  # 48 hours; embeddings build alone can take ~34 h on first run
     permissions:
       contents: write
 
@@ -63,9 +63,33 @@ jobs:
         if: ${{ inputs.dry_run != 'true' }}
         run: .venv/bin/python -m pipeline.cli materialize --output warehouse.duckdb
 
+      - name: Restore embeddings database from S3
+        if: ${{ inputs.dry_run != 'true' }}
+        run: |
+          .venv/bin/python - << 'EOF'
+          from pipeline.storage import get_s3_client, get_bucket_name, download_file
+          client = get_s3_client()
+          bucket = get_bucket_name()
+          key = "embeddings/wp20/embeddings.duckdb"
+          found = download_file(client, bucket, key, "embeddings.duckdb")
+          if not found:
+              print(f"No existing embeddings.duckdb at s3://{bucket}/{key}; starting fresh.")
+          EOF
+
       - name: Build Wahlperiode document embeddings
         if: ${{ inputs.dry_run != 'true' }}
         run: .venv/bin/python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
+
+      - name: Persist embeddings database to S3
+        if: ${{ inputs.dry_run != 'true' }}
+        run: |
+          .venv/bin/python - << 'EOF'
+          from pipeline.storage import get_s3_client, get_bucket_name, upload_file
+          client = get_s3_client()
+          bucket = get_bucket_name()
+          key = "embeddings/wp20/embeddings.duckdb"
+          upload_file(client, bucket, key, "embeddings.duckdb")
+          EOF
 
       - name: Upload embedding artifacts
         if: ${{ inputs.dry_run != 'true' }}

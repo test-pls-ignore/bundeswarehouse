@@ -17,7 +17,7 @@ jobs:
 
       - name: Install dependencies (no PyTorch)
         run: |
-          pip install boto3 duckdb requests botocore
+          pip install boto3 duckdb requests botocore pytest
 
       - name: Run unit tests
         run: python -m pytest tests/test_pipeline_smoke.py -v

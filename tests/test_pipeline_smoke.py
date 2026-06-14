@@ -62,6 +62,40 @@ class TestStorageHelpers(unittest.TestCase):
         result = download_bytes(mock_client, "bucket", "missing/key.json", retries=1)
         self.assertIsNone(result)
 
+    def test_download_file_returns_false_and_removes_file_on_404(self):
+        """download_file must not leave a zero-byte file on disk when S3 returns 404."""
+        import tempfile
+        from botocore.exceptions import ClientError
+        from pipeline.storage import download_file
+
+        mock_client = MagicMock()
+        mock_client.download_fileobj.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchKey", "Message": "Not found"}}, "GetObject"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = os.path.join(tmpdir, "embeddings.duckdb")
+            result = download_file(mock_client, "bucket", "missing/key.duckdb", local_path, retries=1)
+            self.assertFalse(result)
+            self.assertFalse(os.path.exists(local_path), "Stale empty file must be removed on 404")
+
+    def test_download_file_success(self):
+        """download_file returns True and writes data on success."""
+        import tempfile
+        from pipeline.storage import download_file
+
+        def fake_download(bucket, key, fh, **kwargs):
+            fh.write(b"data")
+
+        mock_client = MagicMock()
+        mock_client.download_fileobj.side_effect = fake_download
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_path = os.path.join(tmpdir, "out.bin")
+            result = download_file(mock_client, "bucket", "some/key", local_path, retries=1)
+            self.assertTrue(result)
+            self.assertTrue(os.path.exists(local_path))
+            with open(local_path, "rb") as f:
+                self.assertEqual(f.read(), b"data")
+
     def test_check_connection_returns_true_on_success(self):
         from pipeline.storage import check_connection
         mock_client = MagicMock()

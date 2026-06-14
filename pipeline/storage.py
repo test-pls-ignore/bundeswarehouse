@@ -156,6 +156,12 @@ def download_file(
         except ClientError as exc:
             error_code = exc.response["Error"]["Code"]
             if error_code in ("404", "NoSuchKey"):
+                # Remove the empty file created by open() above so callers
+                # don't encounter a zero-byte file masquerading as a valid db.
+                try:
+                    os.remove(local_path)
+                except FileNotFoundError:
+                    pass
                 return False
             if attempt == retries:
                 raise

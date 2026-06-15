@@ -179,14 +179,20 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
                 self.commands.append(sql)
                 if "information_schema.tables" in sql:
                     return self
+                if "information_schema.columns" in sql:
+                    return self
                 if sql == "SELECT * FROM drucksache_chunks":
                     return self.result
-                if sql == "SELECT * FROM extraction_log":
+                if sql == "SELECT * REPLACE (extracted_at::VARCHAR AS extracted_at) FROM extraction_log":
                     raise duckdb.IOException("Corrupt database file")
                 raise AssertionError(f"Unexpected SQL: {sql}")
 
             def fetchall(self):
-                return [("drucksache_chunks",), ("extraction_log",)]
+                if self.commands[-1].strip().startswith("SELECT table_name FROM information_schema.tables"):
+                    return [("drucksache_chunks",), ("extraction_log",)]
+                if "information_schema.columns" in self.commands[-1]:
+                    return [("doc_id",), ("status",), ("extracted_at",)]
+                raise AssertionError(f"Unexpected fetchall for SQL: {self.commands[-1]}")
 
             def close(self):
                 self.closed = True
@@ -198,7 +204,10 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
 
         self.assertIn("corrupt.duckdb", str(ctx.exception))
         self.assertIn("SELECT * FROM drucksache_chunks", fake_con.commands)
-        self.assertIn("SELECT * FROM extraction_log", fake_con.commands)
+        self.assertIn(
+            "SELECT * REPLACE (extracted_at::VARCHAR AS extracted_at) FROM extraction_log",
+            fake_con.commands,
+        )
         self.assertTrue(fake_con.closed)
 
     def test_validate_embeddings_db_rejects_invalid_file(self):

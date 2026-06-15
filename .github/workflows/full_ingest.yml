@@ -11,11 +11,41 @@ on:
         options:
           - "false"
           - "true"
+      target_docs_per_partition:
+        description: "Target number of pending documents per partition"
+        required: false
+        default: "200"
+        type: string
+      max_parallel:
+        description: "Maximum number of partition jobs to run in parallel"
+        required: false
+        default: "4"
+        type: string
+      workers:
+        description: "Concurrent PDF downloads per partition worker"
+        required: false
+        default: "8"
+        type: string
+      batch:
+        description: "Documents processed per extractor batch inside each partition"
+        required: false
+        default: "256"
+        type: string
+      max_attempts:
+        description: "Skip unchanged failed documents after this many attempts"
+        required: false
+        default: "3"
+        type: string
+      partition_limit:
+        description: "Limit planned partitions for fast test runs (0 = all)"
+        required: false
+        default: "0"
+        type: string
 
 jobs:
   full-ingest:
     runs-on: [self-hosted, vps]
-    timeout-minutes: 2880  # 48 hours; embeddings build alone can take ~34 h on first run
+    timeout-minutes: 480
     permissions:
       contents: write
 
@@ -29,6 +59,10 @@ jobs:
       DIP_REQUEST_DELAY: "1.0"
       DIP_MAX_RETRIES: "12"
       DIP_RETRY_BACKOFF_MAX: "900"
+
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_partitions: ${{ steps.plan.outputs.has_partitions }}
 
     steps:
       - name: Checkout repository
@@ -66,43 +100,52 @@ jobs:
         if: ${{ inputs.dry_run != 'true' }}
         run: .venv/bin/python -m pipeline.cli materialize --output warehouse.duckdb
 
-      - name: Restore embeddings database from S3
+      - name: Plan pending document partitions
         if: ${{ inputs.dry_run != 'true' }}
         run: |
-          .venv/bin/python - << 'EOF'
-          from pipeline.storage import get_s3_client, get_bucket_name, download_file
-          client = get_s3_client()
-          bucket = get_bucket_name()
-          key = "embeddings/wp20/embeddings.duckdb"
-          found = download_file(client, bucket, key, "embeddings.duckdb")
-          if not found:
-              print(f"No existing embeddings.duckdb at s3://{bucket}/{key}; starting fresh.")
-          EOF
+          .venv/bin/python -m analytics.extract \
+            --warehouse warehouse.duckdb \
+            --embeddings planner.duckdb \
+            --wahlperiode 20 \
+            --max-attempts "${{ inputs.max_attempts }}" \
+            --target-docs-per-partition "${{ inputs.target_docs_per_partition }}" \
+            --plan-output plan.json
 
-      - name: Build Wahlperiode document embeddings
-        if: ${{ inputs.dry_run != 'true' }}
-        run: .venv/bin/python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
-
-      - name: Persist embeddings database to S3
+      - name: Export partition matrix
+        id: plan
         if: ${{ inputs.dry_run != 'true' }}
         run: |
-          .venv/bin/python - << 'EOF'
-          from pipeline.storage import get_s3_client, get_bucket_name, upload_file
-          client = get_s3_client()
-          bucket = get_bucket_name()
-          key = "embeddings/wp20/embeddings.duckdb"
-          upload_file(client, bucket, key, "embeddings.duckdb")
-          EOF
+          .venv/bin/python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
-      - name: Upload embedding artifacts
+          plan = json.loads(Path("plan.json").read_text(encoding="utf-8"))
+          partitions = plan["partitions"]
+          partition_limit = int("${{ inputs.partition_limit }}")
+          if partition_limit < 0:
+              raise ValueError(f"partition_limit must be >= 0, got {partition_limit}")
+          if partition_limit > 0:
+              partitions = partitions[:partition_limit]
+              plan["partitions"] = partitions
+              plan["partition_count"] = len(partitions)
+              plan["total_docs"] = sum(p["doc_count"] for p in partitions)
+          matrix = json.dumps(partitions, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"matrix={matrix}\n")
+              fh.write(f"has_partitions={'true' if partitions else 'false'}\n")
+          print(json.dumps(plan, indent=2))
+          PY
+
+      - name: Upload plan and warehouse snapshot
         if: ${{ inputs.dry_run != 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: rag-index-wp-20-${{ github.run_id }}
+          name: full-ingest-plan-${{ github.run_id }}
           retention-days: 14
           path: |
             warehouse.duckdb
-            embeddings.duckdb
+            plan.json
 
       - name: Commit updated state.json
         if: ${{ inputs.dry_run != 'true' }}
@@ -112,3 +155,150 @@ jobs:
           git add state.json
           git commit -m "chore: update state after full ingest [skip ci]" || echo "No state changes to commit."
           git push
+
+  embed-partitions:
+    needs: full-ingest
+    if: inputs.dry_run != 'true' && needs.full-ingest.outputs.has_partitions == 'true'
+    runs-on: [self-hosted, vps]
+    timeout-minutes: 300
+    permissions:
+      contents: read
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        partition: ${{ fromJSON(needs.full-ingest.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/python -m ensurepip --upgrade
+          .venv/bin/python -m pip install --upgrade pip
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install PyTorch (CPU-only)
+        run: .venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: .venv/bin/python -m pip install -r requirements.txt
+
+      - name: Download partition plan and warehouse snapshot
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: full-ingest-plan-${{ github.run_id }}
+
+      - name: Build partition embeddings
+        run: |
+          .venv/bin/python -m analytics.extract \
+            --warehouse warehouse.duckdb \
+            --embeddings partition.duckdb \
+            --wahlperiode 20 \
+            --max-attempts "${{ inputs.max_attempts }}" \
+            --workers "${{ inputs.workers }}" \
+            --batch "${{ inputs.batch }}" \
+            --updated-month "${{ matrix.partition.updated_month }}" \
+            --shard-index "${{ matrix.partition.shard_index }}" \
+            --shard-count "${{ matrix.partition.shard_count }}" \
+            --skip-index
+
+      - name: Validate generated partition database
+        run: |
+          .venv/bin/python -m analytics.extract \
+            --embeddings partition.duckdb \
+            --validate-db
+
+      - name: Export partition to Parquet
+        run: |
+          .venv/bin/python -m analytics.extract \
+            --embeddings partition.duckdb \
+            --export-parquet shard-artifact/ \
+            --export-parquet-prefix "${{ matrix.partition.partition_id }}"
+
+      - name: Upload partition artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-ingest-shard-${{ matrix.partition.partition_id }}
+          retention-days: 14
+          path: shard-artifact/
+
+  merge-embeddings:
+    needs: [full-ingest, embed-partitions]
+    if: inputs.dry_run != 'true' && needs.full-ingest.outputs.has_partitions == 'true'
+    runs-on: [self-hosted, vps]
+    timeout-minutes: 120
+    permissions:
+      contents: read
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/python -m ensurepip --upgrade
+          .venv/bin/python -m pip install --upgrade pip
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install PyTorch (CPU-only)
+        run: .venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: .venv/bin/python -m pip install -r requirements.txt
+
+      - name: Download plan and warehouse snapshot
+        uses: actions/download-artifact@v4.1.3
+        with:
+          name: full-ingest-plan-${{ github.run_id }}
+
+      - name: Download partition shard artifacts
+        uses: actions/download-artifact@v4.1.3
+        with:
+          path: shards
+          pattern: full-ingest-shard-*
+          merge-multiple: true
+
+      - name: Merge partition databases
+        run: |
+          .venv/bin/python -m analytics.extract \
+            --embeddings embeddings.duckdb \
+            --merge-dir shards
+
+      - name: Persist embeddings database to S3
+        run: |
+          .venv/bin/python - << 'EOF'
+          from pipeline.storage import get_s3_client, get_bucket_name, upload_file
+          client = get_s3_client()
+          bucket = get_bucket_name()
+          key = "embeddings/wp20/embeddings.duckdb"
+          upload_file(client, bucket, key, "embeddings.duckdb")
+          EOF
+
+      - name: Upload final embedding artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-index-wp-20-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            warehouse.duckdb
+            embeddings.duckdb
+            plan.json

@@ -98,8 +98,26 @@ def validate_embeddings_db(path: str) -> None:
         if missing_tables:
             raise RuntimeError(f"Missing required tables: {', '.join(missing_tables)}")
 
+        extraction_log_columns = {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'main' AND table_name = 'extraction_log'
+                """
+            ).fetchall()
+        }
+        validation_queries = {
+            "drucksache_chunks": "SELECT * FROM drucksache_chunks",
+            "extraction_log": (
+                "SELECT * REPLACE (extracted_at::VARCHAR AS extracted_at) FROM extraction_log"
+                if "extracted_at" in extraction_log_columns
+                else "SELECT * FROM extraction_log"
+            ),
+        }
         for table_name in ("drucksache_chunks", "extraction_log"):
-            result = con.execute(f"SELECT * FROM {table_name}")
+            result = con.execute(validation_queries[table_name])
             while result.fetchmany(1024):
                 pass
     except Exception as exc:

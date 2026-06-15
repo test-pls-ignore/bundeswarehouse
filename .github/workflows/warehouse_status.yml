@@ -1,0 +1,86 @@
+name: Warehouse Status Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      warehouse:
+        description: "Include warehouse snapshot stats (requires a local warehouse.duckdb to be built first)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      wahlperiode:
+        description: "Wahlperiode filter for per-WP row counts in snapshot stats (e.g. 20)"
+        required: false
+        default: "20"
+        type: string
+
+jobs:
+  warehouse-status:
+    runs-on: [self-hosted, vps]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/python -m ensurepip --upgrade
+          .venv/bin/python -m pip install --upgrade pip
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies (no PyTorch needed)
+        run: .venv/bin/python -m pip install -r requirements.txt
+
+      - name: Check S3 connection
+        run: .venv/bin/python -m pipeline.cli check-connection
+
+      - name: Build warehouse snapshot for stats
+        if: ${{ inputs.warehouse == 'true' }}
+        run: .venv/bin/python -m pipeline.cli materialize --output warehouse.duckdb
+
+      - name: Run warehouse status (human-readable)
+        run: |
+          if [ "${{ inputs.warehouse }}" = "true" ]; then
+            .venv/bin/python -m pipeline.cli warehouse-status \
+              --warehouse warehouse.duckdb \
+              --wahlperiode "${{ inputs.wahlperiode }}"
+          else
+            .venv/bin/python -m pipeline.cli warehouse-status
+          fi
+
+      - name: Generate JSON status report
+        run: |
+          if [ "${{ inputs.warehouse }}" = "true" ]; then
+            .venv/bin/python -m pipeline.cli warehouse-status \
+              --json \
+              --warehouse warehouse.duckdb \
+              --wahlperiode "${{ inputs.wahlperiode }}" \
+              > warehouse_status.json
+          else
+            .venv/bin/python -m pipeline.cli warehouse-status \
+              --json \
+              > warehouse_status.json
+          fi
+          echo "--- status summary ---"
+          cat warehouse_status.json
+
+      - name: Upload status report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: warehouse-status-${{ github.run_id }}
+          retention-days: 30
+          path: warehouse_status.json

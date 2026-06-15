@@ -3,8 +3,21 @@ name: Full Ingest – Bundestag Data
 on:
   workflow_dispatch:
     inputs:
+      wahlperiode:
+        description: "Wahlperiode to index (e.g. 20)"
+        required: false
+        default: "20"
+        type: string
       dry_run:
         description: "Dry-run: check connection only (no data download)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      skip_full_load:
+        description: "Skip raw ingest and reuse existing raw/current/ snapshot (saves ~7 h download; runs materialize/planning/indexing only)"
         required: false
         default: "false"
         type: choice
@@ -93,7 +106,7 @@ jobs:
         run: .venv/bin/python -m pipeline.cli check-connection
 
       - name: Run full ingest
-        if: ${{ inputs.dry_run != 'true' }}
+        if: ${{ inputs.dry_run != 'true' && inputs.skip_full_load != 'true' }}
         run: .venv/bin/python -m pipeline.cli full-load
 
       - name: Materialize warehouse snapshot
@@ -106,7 +119,7 @@ jobs:
           .venv/bin/python -m analytics.extract \
             --warehouse warehouse.duckdb \
             --embeddings planner.duckdb \
-            --wahlperiode 20 \
+            --wahlperiode "${{ inputs.wahlperiode }}" \
             --max-attempts "${{ inputs.max_attempts }}" \
             --target-docs-per-partition "${{ inputs.target_docs_per_partition }}" \
             --plan-output plan.json
@@ -148,7 +161,7 @@ jobs:
             plan.json
 
       - name: Commit updated state.json
-        if: ${{ inputs.dry_run != 'true' }}
+        if: ${{ inputs.dry_run != 'true' && inputs.skip_full_load != 'true' }}
         run: |
           git config user.name  "GitHub Actions"
           git config user.email "actions@github.com"
@@ -204,7 +217,7 @@ jobs:
           .venv/bin/python -m analytics.extract \
             --warehouse warehouse.duckdb \
             --embeddings partition.duckdb \
-            --wahlperiode 20 \
+            --wahlperiode "${{ inputs.wahlperiode }}" \
             --max-attempts "${{ inputs.max_attempts }}" \
             --workers "${{ inputs.workers }}" \
             --batch "${{ inputs.batch }}" \
@@ -287,16 +300,20 @@ jobs:
         run: |
           .venv/bin/python - << 'EOF'
           from pipeline.storage import get_s3_client, get_bucket_name, upload_file
+          import os
           client = get_s3_client()
           bucket = get_bucket_name()
-          key = "embeddings/wp20/embeddings.duckdb"
+          wp = os.environ.get("WAHLPERIODE", "20")
+          key = f"embeddings/wp{wp}/embeddings.duckdb"
           upload_file(client, bucket, key, "embeddings.duckdb")
           EOF
+        env:
+          WAHLPERIODE: ${{ inputs.wahlperiode }}
 
       - name: Upload final embedding artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rag-index-wp-20-${{ github.run_id }}
+          name: rag-index-wp-${{ inputs.wahlperiode }}-${{ github.run_id }}
           retention-days: 14
           path: |
             warehouse.duckdb

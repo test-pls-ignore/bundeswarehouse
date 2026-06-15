@@ -124,7 +124,7 @@ To clean up leftover staging data from failed runs, use the
 
 ## Document indexing (RAG MVP)
 
-Index linked Drucksachen PDFs for a single Wahlperiode (default WP 20):
+Index linked Drucksachen PDFs for a configurable Wahlperiode (default WP 20):
 
 ```bash
 # 1) Build a local warehouse snapshot from MinIO
@@ -143,7 +143,7 @@ python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings
 The extractor stores only chunk text + metadata + vectors in `embeddings.duckdb`.
 PDF bytes are processed in-memory and are not persisted.
 
-You can also trigger the GitHub workflow **Index Documents for RAG**.
+You can also trigger the GitHub workflow **Full Ingest – Bundestag Data**.
 It now:
 
 - materializes one warehouse snapshot,
@@ -160,6 +160,27 @@ last shard state instead of starting the whole Wahlperiode over.
 Each indexing workflow run uploads `warehouse.duckdb`, `embeddings.duckdb`, and
 the generated `plan.json` as GitHub Actions artifacts for explicit persistence and
 inspection.
+
+### Configurable Wahlperiode
+
+The `wahlperiode` parameter is an explicit workflow input (default: `"20"`).
+Set it at dispatch time to index a different parliamentary term. The same value
+propagates to planning, all partition workers, the S3 upload key
+(`embeddings/wp{N}/embeddings.duckdb`), and the final artifact name.
+
+### Skip full-load / reuse existing snapshot
+
+If you already have a recent `raw/current/` snapshot and just want to rerun
+materialization, planning, or embedding without paying the ~7 h raw download cost,
+enable the **`skip_full_load`** input:
+
+| `skip_full_load` | Effect |
+|---|---|
+| `false` *(default)* | Full pipeline: raw ingest → materialize → plan → embed → merge |
+| `true` | Skips `pipeline.cli full-load`; reads existing `raw/current/` → materialize → plan → embed → merge |
+
+In skip mode `raw/current/` and staging data are **not modified** — only
+materialization and subsequent steps run against the existing published snapshot.
 
 ---
 
@@ -201,7 +222,56 @@ python -m pipeline.cli cleanup-current --resource aktivitaet
 
 ---
 
-## Failure modes
+## Warehouse status
+
+The `warehouse-status` CLI command gives a quick overview of everything that is
+currently stored in S3 and in the local warehouse snapshot without triggering any
+data modifications.
+
+### CLI usage
+
+```bash
+# Human-readable status (storage layers + state/manifest)
+python -m pipeline.cli warehouse-status
+
+# JSON output (for scripting / CI artifact upload)
+python -m pipeline.cli warehouse-status --json
+
+# Include warehouse snapshot row counts (requires a local DuckDB file)
+python -m pipeline.cli warehouse-status \
+  --warehouse warehouse.duckdb \
+  --wahlperiode 20
+
+# JSON output with snapshot stats
+python -m pipeline.cli warehouse-status \
+  --json \
+  --warehouse warehouse.duckdb \
+  --wahlperiode 20 \
+  > status.json
+```
+
+### What it reports
+
+| Section | Details |
+|---|---|
+| **Storage – LATEST_RUN.json** | `run_id`, `published_at`, `run_count` of the last successful full-load |
+| **Storage – raw/current/** | Object count per resource (vorgang, drucksache, …) |
+| **Storage – raw/_staging/** | Object count grouped by in-progress/leftover run |
+| **State** | `run_count`, `last_run_at`, `last_seen_update`, active full-load run if any |
+| **Manifest** | `created_at`, `updated_at`, total tracked object count |
+| **Warehouse snapshot** *(optional)* | Row counts per table, min/max timestamps, `pdf_url` non-null count for drucksache, per-WP count when `--wahlperiode` is given |
+
+### Workflow usage
+
+The **Warehouse Status Report** workflow (`warehouse_status.yml`) runs the same
+command manually and uploads `warehouse_status.json` as a 30-day artifact:
+
+1. Go to **Actions → Warehouse Status Report → Run workflow**.
+2. Set `warehouse` to `true` if you also want snapshot row counts (triggers a
+   `materialize` step first to build a fresh local copy).
+3. Optionally set `wahlperiode` for per-WP breakdown.
+
+---
 
 ### WAF / anti-bot challenge page (`ChallengePageError`)
 

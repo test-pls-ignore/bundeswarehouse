@@ -7,6 +7,7 @@ Usage:
   python -m pipeline.cli check-connection
   python -m pipeline.cli cleanup-staging
   python -m pipeline.cli cleanup-current [--resource <resource>]
+  python -m pipeline.cli warehouse-status [--json] [--warehouse PATH] [--wahlperiode WP]
 
 Required environment variables:
   S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY,
@@ -14,11 +15,14 @@ Required environment variables:
 """
 
 import argparse
+import json
 import logging
 import os
 import sys
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from analytics.materialize import materialize as run_materialize
 from pipeline.ingest import ChallengePageError, publish_full_load, run_full_load, run_incremental
@@ -26,12 +30,15 @@ from pipeline.manifest import load_manifest, save_manifest
 from pipeline.state import load_state, mark_run_start, save_state
 from pipeline.storage import (
     PREFIX_CURRENT,
+    PREFIX_RAW,
     PREFIX_STAGING,
     check_connection,
     delete_prefix,
+    download_bytes,
     ensure_bucket_exists,
     get_bucket_name,
     get_s3_client,
+    list_prefix,
 )
 
 logging.basicConfig(
@@ -233,6 +240,284 @@ def cmd_cleanup_current(args) -> int:
     return 0
 
 
+def _count_by_resource(keys: List[str], prefix: str) -> Dict[str, int]:
+    """Count S3 objects per resource under *prefix*.
+
+    Keys are expected to follow the pattern ``{prefix}{resource}/…``.
+    Returns a dict mapping resource name → object count.
+    """
+    counts: Dict[str, int] = defaultdict(int)
+    for key in keys:
+        relative = key[len(prefix):]
+        parts = relative.split("/")
+        if parts:
+            counts[parts[0]] += 1
+    return dict(counts)
+
+
+def _count_staging_by_run(keys: List[str]) -> Dict[str, Dict[str, int]]:
+    """Count staging objects grouped by run_id and resource.
+
+    Keys follow ``raw/_staging/{run_id}/{resource}/…``.
+    Returns ``{run_id: {resource: count}}``.
+    """
+    runs: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    staging_len = len(PREFIX_STAGING)
+    for key in keys:
+        relative = key[staging_len:]
+        parts = relative.split("/")
+        if len(parts) >= 2:
+            run_id, resource = parts[0], parts[1]
+            runs[run_id][resource] += 1
+    return {run_id: dict(res_counts) for run_id, res_counts in runs.items()}
+
+
+def cmd_warehouse_status(args) -> int:
+    """Query and print current warehouse/storage status.
+
+    Inspects:
+    - Storage layer: LATEST_RUN.json, raw/current/ counts, raw/_staging/ counts.
+    - State/manifest: run_count, last_seen_update, manifest timestamps.
+    - Optional warehouse snapshot: row counts and pdf_url stats (when --warehouse is given).
+    """
+    as_json = getattr(args, "json", False)
+    warehouse_path = getattr(args, "warehouse", None)
+    wahlperiode = getattr(args, "wahlperiode", None)
+
+    try:
+        client = get_s3_client()
+        bucket = get_bucket_name()
+    except EnvironmentError as exc:
+        logger.error("Cannot connect to S3: %s", exc)
+        return 1
+
+    status: Dict[str, Any] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "bucket": bucket,
+        "storage": {},
+        "state": {},
+        "manifest": {},
+        "warehouse_snapshot": None,
+    }
+
+    # ── Storage layer ──────────────────────────────────────────────────────────
+
+    # LATEST_RUN.json
+    latest_run_key = f"{PREFIX_RAW}LATEST_RUN.json"
+    raw_latest = download_bytes(client, bucket, latest_run_key)
+    if raw_latest:
+        try:
+            latest_run = json.loads(raw_latest.decode())
+        except ValueError:
+            latest_run = {"error": "malformed JSON"}
+    else:
+        latest_run = None
+    status["storage"]["latest_run"] = latest_run
+
+    # raw/current/ counts per resource
+    current_keys = list_prefix(client, bucket, PREFIX_CURRENT)
+    status["storage"]["current_objects_by_resource"] = _count_by_resource(current_keys, PREFIX_CURRENT)
+    status["storage"]["current_total_objects"] = len(current_keys)
+
+    # raw/_staging/ counts grouped by run
+    staging_keys = list_prefix(client, bucket, PREFIX_STAGING)
+    status["storage"]["staging_objects_by_run"] = _count_staging_by_run(staging_keys)
+    status["storage"]["staging_total_objects"] = len(staging_keys)
+
+    # ── State / manifest ───────────────────────────────────────────────────────
+
+    state = load_state(client, bucket)
+    status["state"] = {
+        "run_count": state.get("run_count"),
+        "last_run_at": state.get("last_run_at"),
+        "last_seen_update": state.get("last_seen_update"),
+        "full_load_run_id": state.get("full_load_run_id"),
+        "full_load_completed_resources": state.get("full_load_completed_resources", []),
+        "cursors": state.get("cursors", {}),
+    }
+
+    manifest = load_manifest(client, bucket)
+    status["manifest"] = {
+        "created_at": manifest.get("created_at"),
+        "updated_at": manifest.get("updated_at"),
+        "object_count": len(manifest.get("objects", [])),
+    }
+
+    # ── Optional warehouse snapshot stats ──────────────────────────────────────
+
+    if warehouse_path:
+        try:
+            import duckdb
+
+            # Allowed table names and column names are fully controlled by hardcoded
+            # lists below; we additionally quote them as SQL identifiers for safety.
+            _ALLOWED_TABLES = frozenset(["vorgang", "drucksache", "plenarprotokoll", "aktivitaet"])
+            _ALLOWED_TS_COLS = frozenset(["aktualisiert", "datum", "updated_at"])
+
+            def _qi(name: str) -> str:
+                """Quote a known-safe identifier with double quotes for DuckDB."""
+                return '"' + name.replace('"', '""') + '"'
+
+            con = duckdb.connect(warehouse_path, read_only=True)
+            tables = [row[0] for row in con.execute("SHOW TABLES").fetchall()]
+            snapshot: Dict[str, Any] = {"path": warehouse_path, "tables": {}}
+            target_tables = ["vorgang", "drucksache", "plenarprotokoll", "aktivitaet"]
+            for tbl in target_tables:
+                if tbl not in _ALLOWED_TABLES or tbl not in tables:
+                    snapshot["tables"][tbl] = {"available": False}
+                    continue
+                qtbl = _qi(tbl)
+                row_count = con.execute(f"SELECT COUNT(*) FROM {qtbl}").fetchone()[0]
+                tbl_info: Dict[str, Any] = {"available": True, "row_count": row_count}
+
+                # Timestamp range (look for a common timestamp column)
+                for ts_col in ("aktualisiert", "datum", "updated_at"):
+                    if ts_col not in _ALLOWED_TS_COLS:
+                        continue
+                    qts = _qi(ts_col)
+                    try:
+                        ts_row = con.execute(
+                            f"SELECT MIN({qts}), MAX({qts}) FROM {qtbl}"
+                        ).fetchone()
+                        if ts_row and ts_row[0] is not None:
+                            tbl_info["min_timestamp"] = str(ts_row[0])
+                            tbl_info["max_timestamp"] = str(ts_row[1])
+                            tbl_info["timestamp_column"] = ts_col
+                            break
+                    except Exception:
+                        continue
+
+                # pdf_url stats for drucksache
+                if tbl == "drucksache":
+                    col_names = [
+                        row[0] for row in con.execute(f"DESCRIBE {qtbl}").fetchall()
+                    ]
+                    if "pdf_url" in col_names:
+                        pdf_count = con.execute(
+                            f"SELECT COUNT(*) FROM {qtbl} WHERE pdf_url IS NOT NULL AND pdf_url != ''"
+                        ).fetchone()[0]
+                        tbl_info["rows_with_pdf_url"] = pdf_count
+
+                # Optional wahlperiode filter
+                if wahlperiode:
+                    col_names = [
+                        row[0] for row in con.execute(f"DESCRIBE {qtbl}").fetchall()
+                    ]
+                    if "wahlperiode" in col_names:
+                        wp_count = con.execute(
+                            f"SELECT COUNT(*) FROM {qtbl} WHERE wahlperiode = ?",
+                            [int(wahlperiode)],
+                        ).fetchone()[0]
+                        tbl_info[f"row_count_wp{wahlperiode}"] = wp_count
+
+                snapshot["tables"][tbl] = tbl_info
+
+            con.close()
+            status["warehouse_snapshot"] = snapshot
+        except Exception as exc:
+            status["warehouse_snapshot"] = {"error": str(exc)}
+
+    # ── Output ─────────────────────────────────────────────────────────────────
+
+    if as_json:
+        print(json.dumps(status, indent=2, ensure_ascii=False, default=str))
+    else:
+        _print_status_human(status)
+
+    return 0
+
+
+def _print_status_human(status: Dict[str, Any]) -> None:
+    """Print a human-readable warehouse status report to stdout."""
+    print("=" * 60)
+    print(f"Warehouse Status  ({status['generated_at']})")
+    print(f"Bucket: {status['bucket']}")
+    print("=" * 60)
+
+    # Storage layer
+    print("\n── Storage layer ──────────────────────────────────────────")
+    lr = status["storage"].get("latest_run")
+    if lr:
+        print(f"  LATEST_RUN.json:")
+        print(f"    run_id       : {lr.get('run_id', 'n/a')}")
+        print(f"    published_at : {lr.get('published_at', 'n/a')}")
+        print(f"    run_count    : {lr.get('run_count', 'n/a')}")
+    else:
+        print("  LATEST_RUN.json: not found (no successful full-load yet)")
+
+    current_by_res = status["storage"].get("current_objects_by_resource", {})
+    total_current = status["storage"].get("current_total_objects", 0)
+    print(f"\n  raw/current/  ({total_current} total objects)")
+    if current_by_res:
+        for resource, count in sorted(current_by_res.items()):
+            print(f"    {resource:<20} {count:>6} objects")
+    else:
+        print("    (empty)")
+
+    staging_by_run = status["storage"].get("staging_objects_by_run", {})
+    total_staging = status["storage"].get("staging_total_objects", 0)
+    print(f"\n  raw/_staging/ ({total_staging} total objects across {len(staging_by_run)} run(s))")
+    if staging_by_run:
+        for run_id, res_counts in sorted(staging_by_run.items()):
+            total_for_run = sum(res_counts.values())
+            print(f"    run {run_id}  ({total_for_run} objects)")
+            for resource, count in sorted(res_counts.items()):
+                print(f"      {resource:<18} {count:>6} objects")
+    else:
+        print("    (empty)")
+
+    # State
+    print("\n── State ──────────────────────────────────────────────────")
+    s = status.get("state", {})
+    print(f"  run_count          : {s.get('run_count', 'n/a')}")
+    print(f"  last_run_at        : {s.get('last_run_at', 'n/a')}")
+    print(f"  last_seen_update   : {s.get('last_seen_update', 'n/a')}")
+    active_run = s.get("full_load_run_id")
+    if active_run:
+        completed = s.get("full_load_completed_resources", [])
+        print(f"  active full-load   : {active_run}")
+        print(f"    completed so far : {', '.join(completed) if completed else '(none)'}")
+    else:
+        print("  active full-load   : none")
+
+    # Manifest
+    print("\n── Manifest ───────────────────────────────────────────────")
+    m = status.get("manifest", {})
+    print(f"  created_at   : {m.get('created_at', 'n/a')}")
+    print(f"  updated_at   : {m.get('updated_at', 'n/a')}")
+    print(f"  object_count : {m.get('object_count', 'n/a')}")
+
+    # Warehouse snapshot
+    snap = status.get("warehouse_snapshot")
+    if snap:
+        print("\n── Warehouse snapshot ─────────────────────────────────────")
+        if "error" in snap:
+            print(f"  ERROR: {snap['error']}")
+        else:
+            print(f"  path: {snap.get('path', 'n/a')}")
+            for tbl, info in snap.get("tables", {}).items():
+                if not info.get("available"):
+                    print(f"  {tbl:<20} (table not found in snapshot)")
+                    continue
+                row_count = info.get("row_count", "n/a")
+                print(f"  {tbl:<20} {row_count:>8} rows", end="")
+                if info.get("timestamp_column"):
+                    print(
+                        f"  [{info['timestamp_column']}:"
+                        f" {info.get('min_timestamp', '?')} … {info.get('max_timestamp', '?')}]",
+                        end="",
+                    )
+                if "rows_with_pdf_url" in info:
+                    print(f"  (pdf_url non-null: {info['rows_with_pdf_url']})", end="")
+                for k, v in info.items():
+                    if k.startswith("row_count_wp"):
+                        wp = k[len("row_count_wp"):]
+                        print(f"  [WP{wp}: {v}]", end="")
+                print()
+
+    print()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pipeline",
@@ -274,6 +559,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    status_cmd = subparsers.add_parser(
+        "warehouse-status",
+        help="Report current state of the warehouse storage layers and S3 data",
+    )
+    status_cmd.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output status as JSON instead of human-readable text",
+    )
+    status_cmd.add_argument(
+        "--warehouse",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Path to a local warehouse.duckdb snapshot. "
+            "When provided, row counts and pdf_url stats are included in the report."
+        ),
+    )
+    status_cmd.add_argument(
+        "--wahlperiode",
+        metavar="WP",
+        default=None,
+        help="If given, also report per-Wahlperiode row counts in the warehouse snapshot",
+    )
+
     return parser
 
 
@@ -288,6 +599,7 @@ def main() -> None:
         "materialize": cmd_materialize,
         "cleanup-staging": cmd_cleanup_staging,
         "cleanup-current": cmd_cleanup_current,
+        "warehouse-status": cmd_warehouse_status,
     }
     sys.exit(handlers[args.command](args))
 

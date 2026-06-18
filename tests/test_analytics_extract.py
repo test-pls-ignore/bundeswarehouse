@@ -282,9 +282,19 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             merge_dir = Path(tmpdir) / "shards"
             merge_dir.mkdir()
+
+            def _write_empty_parquet(path: Path) -> None:
+                con = duckdb.connect()
+                try:
+                    con.execute("CREATE TABLE t(v INTEGER)")
+                    escaped_path = str(path).replace("'", "''")
+                    con.execute(f"COPY t TO '{escaped_path}' (FORMAT PARQUET)")
+                finally:
+                    con.close()
+
             for idx in range(1, 4):
-                (merge_dir / f"2024-01-s0{idx}_chunks.parquet").write_text("stub", encoding="utf-8")
-                (merge_dir / f"2024-01-s0{idx}_log.parquet").write_text("stub", encoding="utf-8")
+                _write_empty_parquet(merge_dir / f"2024-01-s0{idx}_chunks.parquet")
+                _write_empty_parquet(merge_dir / f"2024-01-s0{idx}_log.parquet")
 
             output_path = Path(tmpdir) / "embeddings.duckdb"
             executed: list[str] = []
@@ -304,6 +314,10 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
         log_inserts = [query for query in executed if "INSERT OR REPLACE INTO extraction_log" in query]
         self.assertEqual(len(chunk_inserts), 2)
         self.assertEqual(len(log_inserts), 2)
+        self.assertIn("read_parquet([", chunk_inserts[0])
+        self.assertIn("2024-01-s01_chunks.parquet", chunk_inserts[0])
+        self.assertIn("2024-01-s02_chunks.parquet", chunk_inserts[0])
+        self.assertIn("2024-01-s03_chunks.parquet", chunk_inserts[1])
 
     def test_merge_shard_parquets_rejects_invalid_batch_size(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -327,10 +341,11 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
         self.assertEqual(count, 0)
 
     def test_main_passes_merge_batch_size_to_merge_shard_parquets(self):
-        with patch("analytics.extract.merge_shard_parquets") as merge_mock:
-            with patch("sys.argv", ["analytics.extract", "--embeddings", "emb.duckdb", "--merge-dir", "/tmp/shards", "--merge-batch-size", "7"]):
-                main()
-        merge_mock.assert_called_once_with("emb.duckdb", "/tmp/shards", merge_batch_size=7)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("analytics.extract.merge_shard_parquets") as merge_mock:
+                with patch("sys.argv", ["analytics.extract", "--embeddings", "emb.duckdb", "--merge-dir", tmpdir, "--merge-batch-size", "7"]):
+                    main()
+        merge_mock.assert_called_once_with("emb.duckdb", tmpdir, merge_batch_size=7)
 
 
 if __name__ == "__main__":

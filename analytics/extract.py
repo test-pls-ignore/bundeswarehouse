@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import math
+from collections.abc import Iterator
 from pathlib import Path
 
 import duckdb
@@ -485,7 +486,14 @@ def export_shard_parquet(embeddings_path: str, output_dir: str, prefix: str) -> 
 
 
 def _quote_duckdb_path(path: Path) -> str:
+    """Escape single quotes in a path for safe embedding in DuckDB SQL string literals."""
     return str(path).replace("'", "''")
+
+
+def _iter_batches(paths: list[Path], batch_size: int) -> Iterator[tuple[int, list[Path]]]:
+    """Yield 1-based batch number and file-path batches."""
+    for batch_num, idx in enumerate(range(0, len(paths), batch_size), start=1):
+        yield batch_num, paths[idx:idx + batch_size]
 
 
 def merge_shard_parquets(embeddings_path: str, merge_dir: str, merge_batch_size: int = DEFAULT_MERGE_BATCH_SIZE) -> None:
@@ -519,12 +527,11 @@ def merge_shard_parquets(embeddings_path: str, merge_dir: str, merge_batch_size:
             merge_batch_size,
         )
         total_chunk_batches = math.ceil(len(chunks_files) / merge_batch_size)
-        for idx in range(0, len(chunks_files), merge_batch_size):
-            batch = chunks_files[idx:idx + merge_batch_size]
+        for batch_num, batch in _iter_batches(chunks_files, merge_batch_size):
             batch_literal = ", ".join(f"'{_quote_duckdb_path(path)}'" for path in batch)
             logger.info(
                 "Merging chunk shard batch %d/%d (%d files)...",
-                idx // merge_batch_size + 1,
+                batch_num,
                 total_chunk_batches,
                 len(batch),
             )
@@ -536,12 +543,11 @@ def merge_shard_parquets(embeddings_path: str, merge_dir: str, merge_batch_size:
         log_files = sorted(merge_path.glob("*_log.parquet"))
         if log_files:
             total_log_batches = math.ceil(len(log_files) / merge_batch_size)
-            for idx in range(0, len(log_files), merge_batch_size):
-                batch = log_files[idx:idx + merge_batch_size]
+            for batch_num, batch in _iter_batches(log_files, merge_batch_size):
                 batch_literal = ", ".join(f"'{_quote_duckdb_path(path)}'" for path in batch)
                 logger.info(
                     "Merging extraction-log shard batch %d/%d (%d files)...",
-                    idx // merge_batch_size + 1,
+                    batch_num,
                     total_log_batches,
                     len(batch),
                 )

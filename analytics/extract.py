@@ -514,7 +514,7 @@ def merge_shard_parquets(embeddings_path: str, merge_dir: str, merge_batch_size:
             return
 
         con.execute("SET threads = 1")
-        con.execute("SET max_memory = '70%'")
+        con.execute("SET max_memory = '5.6GB'")
         con.execute("SET preserve_insertion_order = false")
         temp_dir = merge_path / ".duckdb_tmp"
         temp_dir.mkdir(parents=True, exist_ok=True)

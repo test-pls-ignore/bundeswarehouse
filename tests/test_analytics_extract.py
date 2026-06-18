@@ -11,6 +11,7 @@ from analytics.extract import (
     export_shard_parquet,
     filter_pending_docs,
     get_pending,
+    main,
     merge_shard_parquets,
     validate_embeddings_db,
 )
@@ -277,6 +278,55 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
         self.assertEqual(doc_ids, {"doc-a", "doc-b", "doc-c"})
         self.assertEqual(chunk_ids, {"doc-a_0", "doc-b_0", "doc-c_0"})
 
+    def test_merge_shard_parquets_honors_batch_size(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            merge_dir = Path(tmpdir) / "shards"
+            merge_dir.mkdir()
+
+            def _write_empty_parquet(path: Path) -> None:
+                con = duckdb.connect()
+                try:
+                    con.execute("CREATE TABLE t(v INTEGER)")
+                    escaped_path = str(path).replace("'", "''")
+                    con.execute(f"COPY t TO '{escaped_path}' (FORMAT PARQUET)")
+                finally:
+                    con.close()
+
+            for idx in range(1, 4):
+                _write_empty_parquet(merge_dir / f"2024-01-s0{idx}_chunks.parquet")
+                _write_empty_parquet(merge_dir / f"2024-01-s0{idx}_log.parquet")
+
+            output_path = Path(tmpdir) / "embeddings.duckdb"
+            executed: list[str] = []
+
+            class FakeConnection:
+                def execute(self, query: str):
+                    executed.append(query)
+                    return self
+
+                def close(self):
+                    return None
+
+            with patch("analytics.extract.setup_db", return_value=FakeConnection()):
+                merge_shard_parquets(str(output_path), str(merge_dir), merge_batch_size=2)
+
+        chunk_inserts = [query for query in executed if "INSERT OR REPLACE INTO drucksache_chunks" in query]
+        log_inserts = [query for query in executed if "INSERT OR REPLACE INTO extraction_log" in query]
+        self.assertEqual(len(chunk_inserts), 2)
+        self.assertEqual(len(log_inserts), 2)
+        self.assertIn("read_parquet([", chunk_inserts[0])
+        self.assertIn("2024-01-s01_chunks.parquet", chunk_inserts[0])
+        self.assertIn("2024-01-s02_chunks.parquet", chunk_inserts[0])
+        self.assertIn("2024-01-s03_chunks.parquet", chunk_inserts[1])
+
+    def test_merge_shard_parquets_rejects_invalid_batch_size(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            merge_dir = Path(tmpdir) / "shards"
+            merge_dir.mkdir()
+            output_path = Path(tmpdir) / "embeddings.duckdb"
+            with self.assertRaises(ValueError):
+                merge_shard_parquets(str(output_path), str(merge_dir), merge_batch_size=0)
+
     def test_merge_shard_parquets_creates_empty_db_when_no_shards(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             merge_dir = Path(tmpdir) / "shards"
@@ -289,6 +339,13 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
             con.close()
 
         self.assertEqual(count, 0)
+
+    def test_main_passes_merge_batch_size_to_merge_shard_parquets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("analytics.extract.merge_shard_parquets") as merge_mock:
+                with patch("sys.argv", ["analytics.extract", "--embeddings", "emb.duckdb", "--merge-dir", tmpdir, "--merge-batch-size", "7"]):
+                    main()
+        merge_mock.assert_called_once_with("emb.duckdb", tmpdir, merge_batch_size=7)
 
 
 if __name__ == "__main__":

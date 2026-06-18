@@ -249,73 +249,8 @@ jobs:
   merge-embeddings:
     needs: [full-ingest, embed-partitions]
     if: inputs.dry_run != 'true' && needs.full-ingest.outputs.has_partitions == 'true'
-    runs-on: [self-hosted, vps]
-    timeout-minutes: 120
-    permissions:
-      contents: read
-
-    env:
-      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-      S3_BUCKET: ${{ secrets.S3_BUCKET }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python virtualenv
-        run: |
-          python3 --version
-          python3 -m venv .venv
-          .venv/bin/python -m ensurepip --upgrade
-          .venv/bin/python -m pip install --upgrade pip
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
-
-      - name: Install PyTorch (CPU-only)
-        run: .venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install dependencies
-        run: .venv/bin/python -m pip install -r requirements.txt
-
-      - name: Download plan and warehouse snapshot
-        uses: actions/download-artifact@v4.1.3
-        with:
-          name: full-ingest-plan-${{ github.run_id }}
-
-      - name: Download partition shard artifacts
-        uses: actions/download-artifact@v4.1.3
-        with:
-          path: shards
-          pattern: full-ingest-shard-*
-          merge-multiple: true
-
-      - name: Merge partition databases
-        run: |
-          .venv/bin/python -m analytics.extract \
-            --embeddings embeddings.duckdb \
-            --merge-dir shards
-
-      - name: Persist embeddings database to S3
-        run: |
-          .venv/bin/python - << 'EOF'
-          from pipeline.storage import get_s3_client, get_bucket_name, upload_file
-          import os
-          client = get_s3_client()
-          bucket = get_bucket_name()
-          wp = os.environ.get("WAHLPERIODE", "20")
-          key = f"embeddings/wp{wp}/embeddings.duckdb"
-          upload_file(client, bucket, key, "embeddings.duckdb")
-          EOF
-        env:
-          WAHLPERIODE: ${{ inputs.wahlperiode }}
-
-      - name: Upload final embedding artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: rag-index-wp-${{ inputs.wahlperiode }}-${{ github.run_id }}
-          retention-days: 14
-          path: |
-            warehouse.duckdb
-            embeddings.duckdb
-            plan.json
+    uses: ./.github/workflows/merge_embeddings.yml
+    secrets: inherit
+    with:
+      source_run_id: ${{ github.run_id }}
+      wahlperiode: ${{ inputs.wahlperiode }}

@@ -38,6 +38,7 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 DEFAULT_WORKERS = 8
 DEFAULT_BATCH = 256
+DEFAULT_MERGE_BATCH_SIZE = 20
 DEFAULT_WAHLPERIODE = 20
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_TARGET_DOCS_PER_PARTITION = 200
@@ -483,7 +484,14 @@ def export_shard_parquet(embeddings_path: str, output_dir: str, prefix: str) -> 
     logger.info("Exported shard to %s, %s", chunks_path, log_path)
 
 
-def merge_shard_parquets(embeddings_path: str, merge_dir: str) -> None:
+def _quote_duckdb_path(path: Path) -> str:
+    return str(path).replace("'", "''")
+
+
+def merge_shard_parquets(embeddings_path: str, merge_dir: str, merge_batch_size: int = DEFAULT_MERGE_BATCH_SIZE) -> None:
+    if merge_batch_size < 1:
+        raise ValueError("merge_batch_size must be >= 1")
+
     output_path = Path(embeddings_path)
     if output_path.exists():
         output_path.unlink()
@@ -497,15 +505,50 @@ def merge_shard_parquets(embeddings_path: str, merge_dir: str) -> None:
             logger.info("No shard Parquet files found in %s; created an empty embeddings database.", merge_dir)
             return
 
-        chunks_glob = str(merge_path / "*_chunks.parquet")
-        log_glob = str(merge_path / "*_log.parquet")
+        con.execute("SET threads = 1")
+        con.execute("SET max_memory = '70%'")
+        con.execute("SET preserve_insertion_order = false")
+        temp_dir = merge_path / ".duckdb_tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        con.execute(f"SET temp_directory = '{_quote_duckdb_path(temp_dir)}'")
 
-        logger.info("Merging %d chunk shards from %s...", len(chunks_files), merge_dir)
-        con.execute(f"INSERT OR REPLACE INTO drucksache_chunks SELECT * FROM read_parquet('{chunks_glob}')")
+        logger.info(
+            "Merging %d chunk shards from %s in batches of %d...",
+            len(chunks_files),
+            merge_dir,
+            merge_batch_size,
+        )
+        total_chunk_batches = math.ceil(len(chunks_files) / merge_batch_size)
+        for idx in range(0, len(chunks_files), merge_batch_size):
+            batch = chunks_files[idx:idx + merge_batch_size]
+            batch_literal = ", ".join(f"'{_quote_duckdb_path(path)}'" for path in batch)
+            logger.info(
+                "Merging chunk shard batch %d/%d (%d files)...",
+                idx // merge_batch_size + 1,
+                total_chunk_batches,
+                len(batch),
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO drucksache_chunks "
+                f"SELECT * FROM read_parquet([{batch_literal}])"
+            )
 
         log_files = sorted(merge_path.glob("*_log.parquet"))
         if log_files:
-            con.execute(f"INSERT OR REPLACE INTO extraction_log SELECT * FROM read_parquet('{log_glob}')")
+            total_log_batches = math.ceil(len(log_files) / merge_batch_size)
+            for idx in range(0, len(log_files), merge_batch_size):
+                batch = log_files[idx:idx + merge_batch_size]
+                batch_literal = ", ".join(f"'{_quote_duckdb_path(path)}'" for path in batch)
+                logger.info(
+                    "Merging extraction-log shard batch %d/%d (%d files)...",
+                    idx // merge_batch_size + 1,
+                    total_log_batches,
+                    len(batch),
+                )
+                con.execute(
+                    "INSERT OR REPLACE INTO extraction_log "
+                    f"SELECT * FROM read_parquet([{batch_literal}])"
+                )
 
         logger.info("Building HNSW index over %d merged shards...", len(chunks_files))
         con.execute("SET hnsw_enable_experimental_persistence = true")
@@ -552,6 +595,12 @@ def main() -> None:
         help="Maximum target size for each planned partition (default: 200).",
     )
     parser.add_argument("--merge-dir", help="Merge shard Parquet files from this directory into --embeddings and build the HNSW index.")
+    parser.add_argument(
+        "--merge-batch-size",
+        type=int,
+        default=DEFAULT_MERGE_BATCH_SIZE,
+        help="Shard Parquet files to merge per batch when using --merge-dir (default: 20).",
+    )
     parser.add_argument("--export-parquet", metavar="DIR", help="Export shard to Parquet files in DIR and exit.")
     parser.add_argument("--export-parquet-prefix", metavar="PREFIX", help="Filename prefix for --export-parquet output (default: embeddings stem).")
     args = parser.parse_args()
@@ -573,7 +622,7 @@ def main() -> None:
         return
 
     if args.merge_dir:
-        merge_shard_parquets(args.embeddings, args.merge_dir)
+        merge_shard_parquets(args.embeddings, args.merge_dir, merge_batch_size=args.merge_batch_size)
         return
 
     if args.validate_db:

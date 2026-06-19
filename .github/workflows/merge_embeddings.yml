@@ -25,8 +25,8 @@ on:
 
 jobs:
   merge-embeddings:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
+    runs-on: [self-hosted, vps]
+    timeout-minutes: 480
     permissions:
       actions: read
       contents: read

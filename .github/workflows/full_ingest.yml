@@ -72,6 +72,7 @@ jobs:
       DIP_REQUEST_DELAY: "1.0"
       DIP_MAX_RETRIES: "12"
       DIP_RETRY_BACKOFF_MAX: "900"
+      MEMORY_MAX: "5600M"
 
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}

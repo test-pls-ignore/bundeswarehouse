@@ -136,6 +136,17 @@ class TestAnalyticsExtractPartitioning(unittest.TestCase):
 
 
 class TestAnalyticsExtractMerge(unittest.TestCase):
+    class _RecordingConnection:
+        def __init__(self, executed: list[str]):
+            self._executed = executed
+
+        def execute(self, query: str):
+            self._executed.append(query)
+            return self
+
+        def close(self):
+            return None
+
     def _write_empty_parquet(self, path: Path) -> None:
         con = duckdb.connect()
         try:
@@ -336,16 +347,10 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
 
             output_path = Path(tmpdir) / "embeddings.duckdb"
             executed: list[str] = []
-
-            class FakeConnection:
-                def execute(self, query: str):
-                    executed.append(query)
-                    return self
-
-                def close(self):
-                    return None
-
-            with patch("analytics.extract.setup_db", return_value=FakeConnection()):
+            with patch(
+                "analytics.extract.setup_db",
+                return_value=self._RecordingConnection(executed),
+            ):
                 merge_shard_parquets(str(output_path), str(merge_dir))
 
         self.assertIn(
@@ -361,16 +366,10 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
 
             output_path = Path(tmpdir) / "embeddings.duckdb"
             executed: list[str] = []
-
-            class FakeConnection:
-                def execute(self, query: str):
-                    executed.append(query)
-                    return self
-
-                def close(self):
-                    return None
-
-            with patch("analytics.extract.setup_db", return_value=FakeConnection()):
+            with patch(
+                "analytics.extract.setup_db",
+                return_value=self._RecordingConnection(executed),
+            ):
                 merge_shard_parquets(
                     str(output_path),
                     str(merge_dir),

@@ -136,6 +136,15 @@ class TestAnalyticsExtractPartitioning(unittest.TestCase):
 
 
 class TestAnalyticsExtractMerge(unittest.TestCase):
+    def _write_empty_parquet(self, path: Path) -> None:
+        con = duckdb.connect()
+        try:
+            con.execute("CREATE TABLE t(v INTEGER)")
+            escaped_path = str(path).replace("'", "''")
+            con.execute(f"COPY t TO '{escaped_path}' (FORMAT PARQUET)")
+        finally:
+            con.close()
+
     def test_validate_embeddings_db_accepts_valid_database(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "embeddings.duckdb"
@@ -323,17 +332,7 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             merge_dir = Path(tmpdir) / "shards"
             merge_dir.mkdir()
-
-            def _write_empty_parquet(path: Path) -> None:
-                con = duckdb.connect()
-                try:
-                    con.execute("CREATE TABLE t(v INTEGER)")
-                    escaped_path = str(path).replace("'", "''")
-                    con.execute(f"COPY t TO '{escaped_path}' (FORMAT PARQUET)")
-                finally:
-                    con.close()
-
-            _write_empty_parquet(merge_dir / "2024-01-s01_chunks.parquet")
+            self._write_empty_parquet(merge_dir / "2024-01-s01_chunks.parquet")
 
             output_path = Path(tmpdir) / "embeddings.duckdb"
             executed: list[str] = []
@@ -358,17 +357,7 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             merge_dir = Path(tmpdir) / "shards"
             merge_dir.mkdir()
-
-            def _write_empty_parquet(path: Path) -> None:
-                con = duckdb.connect()
-                try:
-                    con.execute("CREATE TABLE t(v INTEGER)")
-                    escaped_path = str(path).replace("'", "''")
-                    con.execute(f"COPY t TO '{escaped_path}' (FORMAT PARQUET)")
-                finally:
-                    con.close()
-
-            _write_empty_parquet(merge_dir / "2024-01-s01_chunks.parquet")
+            self._write_empty_parquet(merge_dir / "2024-01-s01_chunks.parquet")
 
             output_path = Path(tmpdir) / "embeddings.duckdb"
             executed: list[str] = []

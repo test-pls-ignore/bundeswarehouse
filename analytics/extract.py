@@ -562,7 +562,7 @@ def merge_shard_parquets(
                 )
 
         if not build_index:
-            logger.info("Skipped HNSW index creation for merged embeddings database.")
+            logger.info("Skipping HNSW index creation for merged embeddings database.")
             return
 
         logger.info("Building HNSW index over %d merged shards...", len(chunks_files))

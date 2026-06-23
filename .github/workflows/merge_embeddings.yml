@@ -33,7 +33,7 @@ on:
 
 jobs:
   merge-embeddings:
-    runs-on: [self-hosted, vps]
+    runs-on: ubuntu-latest
     timeout-minutes: 480
     permissions:
       actions: read
@@ -84,7 +84,8 @@ jobs:
         run: |
           .venv/bin/python -m analytics.extract \
             --embeddings embeddings.duckdb \
-            --merge-dir shards
+            --merge-dir shards \
+            --skip-index
 
       - name: Persist embeddings database to S3
         env:

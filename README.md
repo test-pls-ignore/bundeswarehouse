@@ -150,7 +150,9 @@ It now:
 - plans pending documents into smaller partitions grouped by `aktualisiert` month,
 - further splits large months into stable document-level shards,
 - runs those partitions in parallel matrix jobs without building the HNSW index in every shard,
-- merges the shard databases once at the end and builds the final index exactly once.
+- uploads shard artifacts from the VPS workers and merges them once at the end on a
+  GitHub-hosted runner, while intentionally leaving the merged `embeddings.duckdb`
+  without a final HNSW index in CI.
 
 This is substantially faster than processing the whole `wp20` set in one job and
 keeps each worker small enough to stay well below the GitHub Actions 6-hour limit.

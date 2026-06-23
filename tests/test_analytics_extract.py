@@ -318,6 +318,46 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
         self.assertIn("2024-01-s01_chunks.parquet", chunk_inserts[0])
         self.assertIn("2024-01-s02_chunks.parquet", chunk_inserts[0])
         self.assertIn("2024-01-s03_chunks.parquet", chunk_inserts[1])
+        self.assertIn("CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx", "\n".join(executed))
+
+    def test_merge_shard_parquets_skips_index_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            merge_dir = Path(tmpdir) / "shards"
+            merge_dir.mkdir()
+
+            def _write_empty_parquet(path: Path) -> None:
+                con = duckdb.connect()
+                try:
+                    con.execute("CREATE TABLE t(v INTEGER)")
+                    escaped_path = str(path).replace("'", "''")
+                    con.execute(f"COPY t TO '{escaped_path}' (FORMAT PARQUET)")
+                finally:
+                    con.close()
+
+            _write_empty_parquet(merge_dir / "2024-01-s01_chunks.parquet")
+
+            output_path = Path(tmpdir) / "embeddings.duckdb"
+            executed: list[str] = []
+
+            class FakeConnection:
+                def execute(self, query: str):
+                    executed.append(query)
+                    return self
+
+                def close(self):
+                    return None
+
+            with patch("analytics.extract.setup_db", return_value=FakeConnection()):
+                merge_shard_parquets(
+                    str(output_path),
+                    str(merge_dir),
+                    build_index=False,
+                )
+
+        self.assertNotIn(
+            "CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx",
+            "\n".join(executed),
+        )
 
     def test_merge_shard_parquets_rejects_invalid_batch_size(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -345,7 +385,24 @@ class TestAnalyticsExtractMerge(unittest.TestCase):
             with patch("analytics.extract.merge_shard_parquets") as merge_mock:
                 with patch("sys.argv", ["analytics.extract", "--embeddings", "emb.duckdb", "--merge-dir", tmpdir, "--merge-batch-size", "7"]):
                     main()
-        merge_mock.assert_called_once_with("emb.duckdb", tmpdir, merge_batch_size=7)
+        merge_mock.assert_called_once_with(
+            "emb.duckdb",
+            tmpdir,
+            merge_batch_size=7,
+            build_index=True,
+        )
+
+    def test_main_passes_skip_index_to_merge_shard_parquets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("analytics.extract.merge_shard_parquets") as merge_mock:
+                with patch("sys.argv", ["analytics.extract", "--embeddings", "emb.duckdb", "--merge-dir", tmpdir, "--skip-index"]):
+                    main()
+        merge_mock.assert_called_once_with(
+            "emb.duckdb",
+            tmpdir,
+            merge_batch_size=20,
+            build_index=False,
+        )
 
 
 if __name__ == "__main__":

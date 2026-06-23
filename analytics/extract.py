@@ -496,7 +496,12 @@ def _iter_batches(paths: list[Path], batch_size: int) -> Iterator[tuple[int, lis
         yield batch_num, paths[idx:idx + batch_size]
 
 
-def merge_shard_parquets(embeddings_path: str, merge_dir: str, merge_batch_size: int = DEFAULT_MERGE_BATCH_SIZE) -> None:
+def merge_shard_parquets(
+    embeddings_path: str,
+    merge_dir: str,
+    merge_batch_size: int = DEFAULT_MERGE_BATCH_SIZE,
+    build_index: bool = True,
+) -> None:
     if merge_batch_size < 1:
         raise ValueError("merge_batch_size must be >= 1")
 
@@ -555,6 +560,10 @@ def merge_shard_parquets(embeddings_path: str, merge_dir: str, merge_batch_size:
                     "INSERT OR REPLACE INTO extraction_log "
                     f"SELECT * FROM read_parquet([{batch_literal}])"
                 )
+
+        if not build_index:
+            logger.info("Skipped HNSW index creation for merged embeddings database.")
+            return
 
         logger.info("Building HNSW index over %d merged shards...", len(chunks_files))
         con.execute("SET hnsw_enable_experimental_persistence = true")
@@ -628,7 +637,12 @@ def main() -> None:
         return
 
     if args.merge_dir:
-        merge_shard_parquets(args.embeddings, args.merge_dir, merge_batch_size=args.merge_batch_size)
+        merge_shard_parquets(
+            args.embeddings,
+            args.merge_dir,
+            merge_batch_size=args.merge_batch_size,
+            build_index=not args.skip_index,
+        )
         return
 
     if args.validate_db:

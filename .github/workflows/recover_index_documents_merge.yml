@@ -58,7 +58,8 @@ jobs:
         run: |
           python -m analytics.extract \
             --embeddings embeddings.duckdb \
-            --merge-dir shards
+            --merge-dir shards \
+            --skip-index
 
       - name: Upload recovered embedding artifacts
         uses: actions/upload-artifact@v4

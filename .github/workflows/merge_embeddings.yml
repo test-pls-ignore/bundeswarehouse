@@ -33,7 +33,7 @@ on:
 
 jobs:
   merge-embeddings:
-    runs-on: [self-hosted, vps]
+    runs-on: ubuntu-latest
     timeout-minutes: 480
     permissions:
       actions: read

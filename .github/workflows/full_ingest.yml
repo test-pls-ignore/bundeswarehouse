@@ -55,6 +55,10 @@ on:
         default: "0"
         type: string
 
+permissions:
+  actions: read
+  contents: write
+
 jobs:
   full-ingest:
     runs-on: [self-hosted, vps]

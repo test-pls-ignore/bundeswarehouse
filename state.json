@@ -1,8 +1,8 @@
 {
-  "last_run_at": "2026-05-05T18:51:38.997337+00:00",
-  "last_seen_update": "2026-05-06T17:52:02+02:00",
+  "last_run_at": "2026-06-25T15:44:06.166848+00:00",
+  "last_seen_update": "2026-06-25T18:09:34+02:00",
   "cursors": {},
-  "run_count": 2,
+  "run_count": 6,
   "full_load_run_id": null,
   "full_load_completed_resources": []
 }

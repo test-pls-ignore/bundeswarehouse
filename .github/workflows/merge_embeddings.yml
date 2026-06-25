@@ -46,11 +46,6 @@ jobs:
           MINIO_ROOT_PASSWORD: ${{ secrets.S3_SECRET_ACCESS_KEY }}
         ports:
           - 9000:9000
-        options: >-
-          --health-cmd "curl -f http://127.0.0.1:9000/minio/health/ready || exit 1"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
         command: server /data
 
     env:

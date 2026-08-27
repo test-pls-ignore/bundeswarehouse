@@ -8,5 +8,6 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+warehouse.db
 dist/
 *.egg-info/

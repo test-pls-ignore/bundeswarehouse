@@ -9,9 +9,14 @@ on:
         default: "20"
         type: string
       limit:
-        description: "Max protocols to process (smoke test). Leave empty for a full run."
+        # Default is intentionally empty (= full run). GitHub's UI falls
+        # back to `default` whenever the dispatched value is empty, so a
+        # non-empty default here would make "clear the field for a full
+        # run" silently not work (as observed: leaving it blank still ran
+        # with limit=5).
+        description: "Max protocols to process. Leave as-is (blank) for a full run; enter a number for a quick smoke test."
         required: false
-        default: "5"
+        default: ""
         type: string
 
 jobs:

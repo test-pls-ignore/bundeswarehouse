@@ -39,7 +39,11 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
 
       - name: Install dependencies
-        run: .venv/bin/pip install boto3 duckdb httpx
+        # requests is needed even though this workflow never calls the DIP
+        # API: pipeline/cli.py unconditionally imports pipeline.ingest (which
+        # imports requests) at module load time for its full-load /
+        # incremental-update / backfill-resource commands.
+        run: .venv/bin/pip install requests boto3 duckdb httpx
 
       - name: Materialize warehouse snapshot
         run: python -m pipeline.cli materialize --output warehouse.duckdb

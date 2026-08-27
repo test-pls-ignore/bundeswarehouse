@@ -22,14 +22,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        if: ${{ contains(runner.name, 'GitHub Actions') }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Set up Python virtualenv (self-hosted)
-        if: "contains(runner.labels, 'self-hosted')"
+      - name: Set up Python virtualenv
+        # This job only ever targets [self-hosted, vps] (see runs-on above),
+        # so the venv is always created unconditionally — no need to gate on
+        # runner type. (`runner.labels` is not a real GitHub Actions context
+        # field; a condition on it silently evaluates to false and skips
+        # this step, leaving .venv/bin/pip missing for the next step.)
         run: |
           python3 --version
           python3 -m venv .venv

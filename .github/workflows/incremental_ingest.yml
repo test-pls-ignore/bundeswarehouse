@@ -52,6 +52,23 @@ jobs:
       - name: Update Wahlperiode document embeddings
         run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
 
+      - name: Publish data files for local services
+        # docker-compose.yml's `rag` service and the Next.js web app both
+        # read warehouse.duckdb/embeddings.duckdb from this directory (see
+        # docker-compose.yml volumes and web/lib/db.ts's DUCKDB_PATH
+        # default). The runner's own job workspace is a separate directory
+        # (typically ~/actions-runner/_work/<repo>/<repo>/), so without this
+        # step those files are never refreshed. cp+mv (rename within
+        # DATA_DIR) keeps the swap atomic for any process with the file
+        # already open.
+        env:
+          DATA_DIR: /home/christian/bundeswarehouse
+        run: |
+          cp warehouse.duckdb "$DATA_DIR/warehouse.duckdb.new"
+          mv -f "$DATA_DIR/warehouse.duckdb.new" "$DATA_DIR/warehouse.duckdb"
+          cp embeddings.duckdb "$DATA_DIR/embeddings.duckdb.new"
+          mv -f "$DATA_DIR/embeddings.duckdb.new" "$DATA_DIR/embeddings.duckdb"
+
       - name: Upload embedding artifacts
         uses: actions/upload-artifact@v4
         with:

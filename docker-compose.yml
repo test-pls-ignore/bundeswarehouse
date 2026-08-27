@@ -21,6 +21,23 @@ services:
       timeout: 5s
       retries: 3
 
+  mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics
+    command: ["python", "-m", "analytics.mcp_server"]
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      DUCKDB_PATH: "/data/warehouse.duckdb"
+      REDEN_PATH: "/data/reden.duckdb"
+      MCP_HOST: "0.0.0.0"
+      MCP_PORT: "8765"
+    volumes:
+      - "${PWD}/warehouse.duckdb:/data/warehouse.duckdb:ro"
+      - "${PWD}/reden.duckdb:/data/reden.duckdb:ro"
+    restart: unless-stopped
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"

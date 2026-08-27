@@ -86,6 +86,18 @@ jobs:
           con.close()
           PY
 
+      - name: Publish data files for local services
+        # Same rationale as incremental_ingest.yml's equivalent step: the
+        # runner's own job workspace is not the canonical data directory
+        # that local services (RAG API, web app, MCP server) read from.
+        env:
+          DATA_DIR: /home/christian/bundeswarehouse
+        run: |
+          cp warehouse.duckdb "$DATA_DIR/warehouse.duckdb.new"
+          mv -f "$DATA_DIR/warehouse.duckdb.new" "$DATA_DIR/warehouse.duckdb"
+          cp reden.duckdb "$DATA_DIR/reden.duckdb.new"
+          mv -f "$DATA_DIR/reden.duckdb.new" "$DATA_DIR/reden.duckdb"
+
       - name: Upload reden.duckdb artifact
         uses: actions/upload-artifact@v4
         with:

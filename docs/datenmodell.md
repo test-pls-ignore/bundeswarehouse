@@ -74,17 +74,23 @@ nicht die DIP-`person.id` — ein Mapping-Schritt folgt in Phase 2).
 
 ## Roadmap
 
-**Phase 1 — Reden-Fundament (dieser Stand)**
+**Phase 1 — Reden-Fundament (abgeschlossen 2026-08-27)**
 - [x] `person` in Ingest + Views + Materialize
 - [x] `xml_url`/`herausgeber` in der Plenarprotokoll-View
 - [x] `analytics.reden`: XML → `rede`-Tabelle, resumierbar, getestet
-- [ ] Voller Lauf über WP 19–21 (nach nächstem Ingest + Materialize)
+- [x] Voller Lauf über WP 20 (214 Protokolle, via „Extract Structured
+      Speeches (Reden)"-Workflow)
 
-**Phase 2 — LLM-Zugang (nächster Schritt)**
-- [ ] MCP-Server mit zwei Tools: `query_sql` (read-only über
-      warehouse.duckdb + reden.duckdb, Schema-Beschreibung im Tool-Prompt)
-      und `search` (bestehende RAG-Suche als Beleg-Werkzeug).
-      Damit kann Claude Zeitreihen-/Aggregat-Fragen direkt per SQL beantworten.
+**Phase 2 — LLM-Zugang (in Arbeit)**
+- [x] MCP-Server (`analytics/mcp_server.py`) mit zwei Tools: `query_sql`
+      (read-only über warehouse.duckdb + reden.duckdb, Schema-Beschreibung
+      im Tool-Docstring) und `search` (bestehende RAG-Suche als
+      Beleg-Werkzeug). Deployment als eigener `mcp`-Service in
+      docker-compose.yml, gebunden an 127.0.0.1:8765 — Zugriff nur per
+      SSH-Tunnel, siehe README.
+- [ ] Auf dem VPS deployen (`docker compose up -d --build mcp`) und mit
+      einem echten MCP-Client (Claude Desktop/Code) verbinden — noch nicht
+      verifiziert.
 - [ ] Redner-ID-Mapping `rede.redner_id` ↔ MdB-Stammdaten
       (Open-Data-XML „Stammdaten aller Abgeordneten seit 1949")
 - [ ] Reden-Embeddings (Wiederverwendung der extract.py-Maschinerie auf
@@ -107,3 +113,13 @@ nicht die DIP-`person.id` — ein Mapping-Schritt folgt in Phase 2).
 - Letzte Vollingest laut `state.json`: 2026-06-25. Vor der Reden-Extraktion
   einen frischen Ingest + `materialize` laufen lassen, damit `person` und
   die neuen Plenarprotokoll-Spalten im Snapshot sind.
+- `incremental_ingest.yml` und `reden_extract.yml` kopieren ihre
+  Ergebnisdateien seit 2026-08-27 explizit nach `/home/christian/bundeswarehouse/`
+  (der Ordner, den `docker-compose.yml` und die Next.js-App lesen). Vorher
+  bestand hier eine Lücke: Der Self-Hosted-Runner schreibt in sein eigenes
+  Workspace-Verzeichnis (`~/actions-runner/_work/...`), nicht in
+  `~/bundeswarehouse` — ohne den Publish-Schritt wären `rag`/Web-App/MCP-Server
+  nie mit frischen Daten versorgt worden. `full_ingest.yml`s finaler
+  Merge-Schritt läuft auf einem GitHub-gehosteten Runner (siehe README) und
+  hat diesen Publish-Schritt bewusst noch **nicht** — das ist eine bekannte,
+  offene Lücke für den vollen Ingest-Pfad.

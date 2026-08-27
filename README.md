@@ -148,6 +148,35 @@ to `herausgeber = 'BT'`.
 
 ---
 
+## MCP server (LLM query access)
+
+`analytics/mcp_server.py` exposes the dataset to an MCP client (Claude
+Desktop, Claude Code) over two tools:
+
+- `query_sql` — read-only SQL (SELECT/WITH only) over `warehouse.duckdb` +
+  `reden.duckdb` (attached as `reden.*`), for aggregate/time-series
+  questions ("word share per fraktion per month").
+- `search` — the existing RAG retrieval, for pulling up literal
+  quotes/citations on a topic.
+
+It runs as its own `mcp` service in `docker-compose.yml`, bound to
+`127.0.0.1:8765` on the VPS (same posture as the `rag` service and MinIO —
+not exposed publicly). Bring it up alongside the other services:
+
+```bash
+docker compose up -d --build mcp
+```
+
+Reach it from your own machine via an SSH tunnel:
+
+```bash
+ssh -L 8765:127.0.0.1:8765 <user>@<vps-host>
+```
+
+then point an MCP client at `http://127.0.0.1:8765/mcp` (Streamable HTTP).
+
+---
+
 ## Document indexing (RAG MVP)
 
 Index linked Drucksachen PDFs for a configurable Wahlperiode (default WP 20):

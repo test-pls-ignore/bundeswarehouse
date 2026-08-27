@@ -1,0 +1,77 @@
+name: Backfill New Resource
+
+on:
+  workflow_dispatch:
+    inputs:
+      resource:
+        description: "Resource to fully backfill into raw/current/ (must not already have data there)"
+        required: true
+        default: "person"
+        type: choice
+        options:
+          - person
+          - vorgang
+          - drucksache
+          - plenarprotokoll
+          - aktivitaet
+
+jobs:
+  backfill-resource:
+    runs-on: [self-hosted, vps]
+    permissions:
+      contents: write
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+      BUNDESTAG_API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: ${{ contains(runner.name, 'GitHub Actions') }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up Python virtualenv (self-hosted)
+        if: "contains(runner.labels, 'self-hosted')"
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/python3 -m ensurepip --upgrade
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        # Only the ingest/materialize path is needed here (no PDF/embedding
+        # deps), so skip the heavy torch/sentence-transformers install that
+        # full_ingest.yml and incremental_ingest.yml use for RAG indexing.
+        run: .venv/bin/pip install requests boto3 duckdb
+
+      - name: Check S3 connection
+        run: python -m pipeline.cli check-connection
+
+      - name: Backfill resource
+        run: python -m pipeline.cli backfill-resource --resource "${{ inputs.resource }}"
+
+      - name: Materialize warehouse snapshot
+        run: python -m pipeline.cli materialize --output warehouse.duckdb
+
+      - name: Upload warehouse snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: warehouse-after-backfill-${{ inputs.resource }}-${{ github.run_id }}
+          retention-days: 7
+          path: warehouse.duckdb
+
+      - name: Commit updated state.json
+        run: |
+          git config user.name  "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add state.json
+          git commit -m "chore: update state after backfilling ${{ inputs.resource }} [skip ci]" || echo "No state changes to commit."
+          git push

@@ -115,11 +115,32 @@ def _create_views(con: duckdb.DuckDBPyConnection, bucket: str) -> None:
             CAST(datum         AS DATE)        AS datum,
             CAST(aktualisiert  AS TIMESTAMPTZ) AS aktualisiert,
             titel,
+            herausgeber,
             vorgangsbezug_anzahl,
             sitzungsbemerkung,
             fundstelle.pdf_url                 AS pdf_url,
+            fundstelle.xml_url                 AS xml_url,
         FROM read_ndjson(
             's3://{bucket}/raw/current/plenarprotokoll/**/*.ndjson',
+            ignore_errors = true
+        )
+    """)
+
+    con.execute(f"""
+        CREATE OR REPLACE VIEW person AS
+        SELECT
+            id,
+            vorname,
+            nachname,
+            titel,
+            fraktion,
+            funktion,
+            wahlperiode,
+            CAST(aktualisiert  AS TIMESTAMPTZ) AS aktualisiert,
+            CAST(basisdatum    AS DATE)        AS basisdatum,
+            CAST(datum         AS DATE)        AS datum,
+        FROM read_ndjson(
+            's3://{bucket}/raw/current/person/**/*.ndjson',
             ignore_errors = true
         )
     """)

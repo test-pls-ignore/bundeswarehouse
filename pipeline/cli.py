@@ -4,6 +4,7 @@ CLI entrypoint for the bundeswarehouse pipeline.
 Usage:
   python -m pipeline.cli full-load
   python -m pipeline.cli incremental-update
+  python -m pipeline.cli backfill-resource --resource <resource>
   python -m pipeline.cli check-connection
   python -m pipeline.cli cleanup-staging
   python -m pipeline.cli cleanup-current [--resource <resource>]
@@ -25,7 +26,15 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from analytics.materialize import materialize as run_materialize
-from pipeline.ingest import ChallengePageError, publish_full_load, run_full_load, run_incremental
+from pipeline.ingest import (
+    RESOURCES,
+    ChallengePageError,
+    ingest_resource,
+    load_api_key,
+    publish_full_load,
+    run_full_load,
+    run_incremental,
+)
 from pipeline.manifest import load_manifest, save_manifest
 from pipeline.state import load_state, mark_run_start, save_state
 from pipeline.storage import (
@@ -192,6 +201,69 @@ def cmd_incremental_update(_args) -> int:
     save_state(state, client, bucket)
     save_manifest(manifest, client, bucket)
     logger.info("Incremental update complete.")
+    return 0
+
+
+def cmd_backfill_resource(args) -> int:
+    """One-off full backfill of a single resource directly into raw/current/.
+
+    Use this when a resource is newly added to RESOURCES after the other
+    resources already have a populated raw/current/ snapshot (e.g. 'person').
+    incremental-update alone would only fetch entries updated since the
+    global ``last_seen_update`` watermark, missing historical records that
+    predate it.
+
+    Unlike full-load, this does *not* touch any other resource and does not
+    go through the staging → publish dance: it fetches straight into
+    raw/current/<resource>/. It refuses to run if that prefix already has
+    objects, to avoid silently duplicating or corrupting an existing
+    snapshot; use cleanup-current --resource <name> first if you really want
+    to start over.
+    """
+    resource = args.resource
+    if resource not in RESOURCES:
+        logger.error("Unknown resource %r. Valid resources: %s", resource, RESOURCES)
+        return 1
+
+    if not os.environ.get("BUNDESTAG_API_KEY", "").strip():
+        logger.error(
+            "BUNDESTAG_API_KEY is not set or empty. "
+            "Configure it as a repository secret and pass it via the workflow env: "
+            "BUNDESTAG_API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}"
+        )
+        return 1
+
+    client = get_s3_client()
+    bucket = get_bucket_name()
+    ensure_bucket_exists(client, bucket)
+
+    existing = list_prefix(client, bucket, f"{PREFIX_CURRENT}{resource}/")
+    if existing:
+        logger.error(
+            "raw/current/%s/ already has %d object(s) — refusing to backfill "
+            "over existing data. Run `cleanup-current --resource %s` first "
+            "if you really want to start over.",
+            resource, len(existing), resource,
+        )
+        return 1
+
+    state = load_state(client, bucket)
+    manifest = load_manifest(client, bucket)
+    api_key = load_api_key()
+
+    logger.info("Backfilling resource '%s' into raw/current/%s/…", resource, resource)
+    try:
+        state, manifest = ingest_resource(
+            resource, api_key, client, bucket, state, manifest,
+            incremental=False, s3_prefix=PREFIX_CURRENT,
+        )
+    except ChallengePageError as exc:
+        logger.error("Backfill aborted – WAF challenge page blocked the request: %s", exc)
+        return 1
+
+    save_state(state, client, bucket)
+    save_manifest(manifest, client, bucket)
+    logger.info("Backfill of '%s' complete.", resource)
     return 0
 
 
@@ -529,6 +601,17 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("full-load", help="Run a full ingest of all Bundestag data (staging → publish)")
     subparsers.add_parser("incremental-update", help="Run an incremental ingest from saved state")
 
+    backfill_cmd = subparsers.add_parser(
+        "backfill-resource",
+        help="One-off full fetch of a single new resource straight into raw/current/",
+    )
+    backfill_cmd.add_argument(
+        "--resource",
+        required=True,
+        metavar="RESOURCE",
+        help=f"Resource to backfill. One of: {', '.join(RESOURCES)}",
+    )
+
     materialize_cmd = subparsers.add_parser(
         "materialize",
         help="Materialise MinIO NDJSON into a local DuckDB file (warehouse.duckdb)",
@@ -596,6 +679,7 @@ def main() -> None:
         "check-connection": cmd_check_connection,
         "full-load": cmd_full_load,
         "incremental-update": cmd_incremental_update,
+        "backfill-resource": cmd_backfill_resource,
         "materialize": cmd_materialize,
         "cleanup-staging": cmd_cleanup_staging,
         "cleanup-current": cmd_cleanup_current,

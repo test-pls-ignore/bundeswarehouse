@@ -1,0 +1,85 @@
+name: Extract Structured Speeches (Reden)
+
+on:
+  workflow_dispatch:
+    inputs:
+      wahlperiode:
+        description: "Wahlperiode to extract (BT protocols only; leave as-is for WP 20)"
+        required: true
+        default: "20"
+        type: string
+      limit:
+        description: "Max protocols to process (smoke test). Leave empty for a full run."
+        required: false
+        default: "5"
+        type: string
+
+jobs:
+  reden-extract:
+    runs-on: [self-hosted, vps]
+
+    env:
+      S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+      S3_BUCKET: ${{ secrets.S3_BUCKET }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv
+        # This job only ever targets [self-hosted, vps], so the venv is
+        # always created unconditionally (see backfill_resource.yml for why
+        # a runner-type condition here is unreliable).
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/python3 -m ensurepip --upgrade
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: .venv/bin/pip install boto3 duckdb httpx
+
+      - name: Materialize warehouse snapshot
+        run: python -m pipeline.cli materialize --output warehouse.duckdb
+
+      - name: Extract speeches
+        run: |
+          python -m analytics.reden \
+            --warehouse warehouse.duckdb \
+            --reden reden.duckdb \
+            --wahlperiode "${{ inputs.wahlperiode }}" \
+            ${{ inputs.limit != '' && format('--limit {0}', inputs.limit) || '' }}
+
+      - name: Report summary
+        run: |
+          python - <<'PY'
+          import duckdb
+          con = duckdb.connect("reden.duckdb", read_only=True)
+          print("--- totals ---")
+          print(con.execute(
+              "SELECT COUNT(*) AS segmente, COUNT(DISTINCT rede_id) AS reden,"
+              " COUNT(DISTINCT protokoll_id) AS protokolle, SUM(wortanzahl) AS woerter FROM rede"
+          ).fetchall())
+          print("--- per fraktion (non-chair) ---")
+          for row in con.execute(
+              "SELECT fraktion, rolle IS NOT NULL AS regierung, COUNT(DISTINCT rede_id) AS reden,"
+              " SUM(wortanzahl) AS woerter FROM rede WHERE NOT ist_praesidium"
+              " GROUP BY 1, 2 ORDER BY woerter DESC"
+          ).fetchall():
+              print(row)
+          print("--- reden_log status ---")
+          for row in con.execute(
+              "SELECT status, COUNT(*) FROM reden_log GROUP BY 1 ORDER BY 1"
+          ).fetchall():
+              print(row)
+          con.close()
+          PY
+
+      - name: Upload reden.duckdb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reden-wp${{ inputs.wahlperiode }}-${{ github.run_id }}
+          retention-days: 14
+          path: reden.duckdb

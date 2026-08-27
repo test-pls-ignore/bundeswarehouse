@@ -11,3 +11,5 @@ venv/
 warehouse.db
 dist/
 *.egg-info/
+*.duckdb
+*.tmp.duckdb

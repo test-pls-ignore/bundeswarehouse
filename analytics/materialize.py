@@ -25,7 +25,7 @@ from analytics.connect import get_db
 
 logger = logging.getLogger(__name__)
 
-RESOURCES = ["vorgang", "drucksache", "aktivitaet", "plenarprotokoll"]
+RESOURCES = ["person", "vorgang", "drucksache", "aktivitaet", "plenarprotokoll"]
 DEFAULT_OUTPUT = "warehouse.duckdb"
 
 
@@ -42,9 +42,15 @@ def materialize(output_path: str = DEFAULT_OUTPUT) -> None:
 
     for resource in RESOURCES:
         logger.info("Materialising '%s'...", resource)
-        src.execute(
-            f"CREATE OR REPLACE TABLE local.{resource} AS SELECT * FROM {resource}"
-        )
+        try:
+            src.execute(
+                f"CREATE OR REPLACE TABLE local.{resource} AS SELECT * FROM {resource}"
+            )
+        except duckdb.Error as e:
+            # A resource prefix may not exist yet (e.g. 'person' before the first
+            # ingest run that includes it). Skip it instead of failing the snapshot.
+            logger.warning("  '%s' skipped (no readable data): %s", resource, e)
+            continue
         count = src.execute(f"SELECT COUNT(*) FROM local.{resource}").fetchone()[0]
         logger.info("  '%s': %d rows.", resource, count)
 

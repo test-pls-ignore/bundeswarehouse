@@ -122,6 +122,32 @@ To clean up leftover staging data from failed runs, use the
 
 ---
 
+## Structured speech extraction (Reden)
+
+BT plenary protocols (WP ≥ 19) are published as structured XML with per-speech
+speaker tagging. `analytics.reden` downloads these XMLs transiently and builds
+a speaker-attributed `rede` fact table — the basis for "who said what, when,
+for which fraktion" analyses over time. See
+[docs/datenmodell.md](docs/datenmodell.md) for the schema and roadmap.
+
+```bash
+# 1) Build a local warehouse snapshot from MinIO (includes xml_url since Aug 2026)
+python -m analytics.materialize --output warehouse.duckdb
+
+# 2) Extract speeches for one Wahlperiode into reden.duckdb (resumable)
+python -m analytics.reden --warehouse warehouse.duckdb --reden reden.duckdb --wahlperiode 20
+
+# Smoke run on 3 protocols
+python -m analytics.reden --limit 3
+```
+
+Ingested DIP resources are `person`, `vorgang`, `drucksache`,
+`plenarprotokoll`, and `aktivitaet`. The `plenarprotokoll` resource also
+contains Bundesrat protocols (`herausgeber = 'BR'`); speech extraction filters
+to `herausgeber = 'BT'`.
+
+---
+
 ## Document indexing (RAG MVP)
 
 Index linked Drucksachen PDFs for a configurable Wahlperiode (default WP 20):

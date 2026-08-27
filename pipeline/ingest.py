@@ -39,8 +39,9 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://search.dip.bundestag.de/api/v1"
 CHALLENGE_PATH = "/.enodia/challenge"
 
-# Resources to ingest (in order)
-RESOURCES = ["vorgang", "drucksache", "plenarprotokoll", "aktivitaet"]
+# Resources to ingest (in order); person first because it is small and fails fast
+# if the API key is invalid.
+RESOURCES = ["person", "vorgang", "drucksache", "plenarprotokoll", "aktivitaet"]
 
 # Defaults for configurable parameters
 DEFAULT_USER_AGENT = "bundeswarehouse/1.0 (+https://github.com/test-pls-ignore/bundeswarehouse)"

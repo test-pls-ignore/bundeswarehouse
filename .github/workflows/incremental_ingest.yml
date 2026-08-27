@@ -49,6 +49,22 @@ jobs:
       - name: Materialize warehouse snapshot
         run: python -m pipeline.cli materialize --output warehouse.duckdb
 
+      - name: Restore previous embeddings snapshot
+        # actions/checkout removes gitignored files (git clean -ffdx) at the
+        # start of every run, so without this step embeddings.duckdb never
+        # exists yet here — analytics.extract's extraction_log then looks
+        # empty and it reprocesses every WP20 drucksache from scratch every
+        # single run (~20k PDFs) instead of only the genuine deltas. Seed
+        # from the canonical copy so extraction_log carries forward; the
+        # `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS` migrations in
+        # analytics.extract.setup_db() handle schema drift from an older run.
+        env:
+          DATA_DIR: /home/christian/bundeswarehouse
+        run: |
+          if [ -f "$DATA_DIR/embeddings.duckdb" ]; then
+            cp "$DATA_DIR/embeddings.duckdb" embeddings.duckdb
+          fi
+
       - name: Update Wahlperiode document embeddings
         run: python -m analytics.extract --warehouse warehouse.duckdb --embeddings embeddings.duckdb --wahlperiode 20
 

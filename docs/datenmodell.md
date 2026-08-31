@@ -119,7 +119,18 @@ nicht die DIP-`person.id` — ein Mapping-Schritt folgt in Phase 2).
   bestand hier eine Lücke: Der Self-Hosted-Runner schreibt in sein eigenes
   Workspace-Verzeichnis (`~/actions-runner/_work/...`), nicht in
   `~/bundeswarehouse` — ohne den Publish-Schritt wären `rag`/Web-App/MCP-Server
-  nie mit frischen Daten versorgt worden. `full_ingest.yml`s finaler
-  Merge-Schritt läuft auf einem GitHub-gehosteten Runner (siehe README) und
-  hat diesen Publish-Schritt bewusst noch **nicht** — das ist eine bekannte,
-  offene Lücke für den vollen Ingest-Pfad.
+  nie mit frischen Daten versorgt worden.
+- `incremental_ingest.yml` restauriert seit 2026-08-27 vor dem Extract-Schritt
+  die vorhandene `embeddings.duckdb` aus `~/bundeswarehouse/`. Ohne das räumt
+  `actions/checkout` (`git clean -ffdx`) die Datei bei jedem Lauf weg, wodurch
+  `extraction_log` leer aussieht und der Schritt alle ~20 000 WP20-Drucksachen
+  neu verarbeitet statt nur der echten Deltas — live beobachtet: ein Lauf hing
+  nach 6 Minuten bei „20773 pending, 0 already done".
+- `full_ingest.yml`s finaler Merge-Schritt (`merge_embeddings.yml`, läuft auf
+  `ubuntu-latest`) hatte einen Schritt „Persist embeddings database to S3",
+  der wie ein echter Upload aussah, aber `S3_ENDPOINT_URL` fest auf
+  `http://127.0.0.1:9000` gesetzt hatte — einen `services: minio:`-Container,
+  der nur für die Job-Laufzeit existiert. Das Ergebnis eines kompletten
+  40-Stunden-Laufs landete dadurch nur im 14-Tage-GitHub-Actions-Artifact,
+  nie produktiv nutzbar. Seit 2026-08-27 published dieser Schritt stattdessen
+  per SSH/SCP nach `~/bundeswarehouse/`, analog zu `web_deploy.yml`.

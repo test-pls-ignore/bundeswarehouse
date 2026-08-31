@@ -10,15 +10,6 @@ on:
         required: false
         default: "20"
         type: string
-    secrets:
-      S3_ENDPOINT_URL:
-        required: true
-      S3_ACCESS_KEY_ID:
-        required: true
-      S3_SECRET_ACCESS_KEY:
-        required: true
-      S3_BUCKET:
-        required: true
   workflow_dispatch:
     inputs:
       source_run_id:
@@ -26,7 +17,7 @@ on:
         required: true
         type: string
       wahlperiode:
-        description: "Wahlperiode label for S3/artifact output"
+        description: "Wahlperiode label for the artifact output"
         required: false
         default: "20"
         type: string
@@ -38,22 +29,11 @@ jobs:
     permissions:
       actions: read
       contents: read
-    services:
-      minio:
-        image: minio/minio:RELEASE.2024-12-18T13-15-44Z
-        env:
-          MINIO_ROOT_USER: ${{ secrets.S3_ACCESS_KEY_ID }}
-          MINIO_ROOT_PASSWORD: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-        ports:
-          - 9000:9000
-        command: server /data
 
     env:
-      S3_ENDPOINT_URL: http://127.0.0.1:9000
-      S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
-      S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
-      S3_BUCKET: ${{ secrets.S3_BUCKET }}
       MEMORY_MAX: "5600M"
+      VPS_DATA_DIR: /home/christian/bundeswarehouse
+      VPS_SSH_PORT: 2225
 
     steps:
       - name: Checkout repository
@@ -96,42 +76,66 @@ jobs:
             --merge-dir shards \
             --skip-index
 
-      - name: Wait for MinIO and ensure bucket exists
-        run: |
-          ready=0
-          for i in {1..20}; do
-            if curl -fsS http://127.0.0.1:9000/minio/health/ready >/dev/null; then
-              ready=1
-              break
-            fi
-            sleep 3
-          done
-          if [ "$ready" -ne 1 ]; then
-            echo "MinIO did not become ready at http://127.0.0.1:9000 within 60 seconds." >&2
-            exit 1
-          fi
-          .venv/bin/python - <<'EOF'
-          from pipeline.storage import ensure_bucket_exists, get_bucket_name, get_s3_client
-
-          client = get_s3_client()
-          bucket = get_bucket_name()
-          ensure_bucket_exists(client, bucket)
-          EOF
-
-      - name: Persist embeddings database to S3
+      - name: Configure SSH access
         env:
-          WAHLPERIODE: ${{ inputs.wahlperiode }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
         run: |
-          .venv/bin/python - <<'EOF'
-          from pipeline.storage import get_s3_client, get_bucket_name, upload_file
-          import os
+          set -euo pipefail
 
-          client = get_s3_client()
-          bucket = get_bucket_name()
-          wp = os.environ.get("WAHLPERIODE", "20")
-          key = f"embeddings/wp{wp}/embeddings.duckdb"
-          upload_file(client, bucket, key, "embeddings.duckdb")
+          test -n "$VPS_HOST"
+          test -n "$VPS_USER"
+          test -n "$VPS_SSH_KEY"
+          test -n "$VPS_KNOWN_HOSTS"
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/merge_embeddings_key"
+          chmod 600 "$HOME/.ssh/merge_embeddings_key"
+
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/merge_embeddings_known_hosts"
+          chmod 644 "$HOME/.ssh/merge_embeddings_known_hosts"
+
+      - name: Publish merged data files to the VPS
+        # This job runs on ubuntu-latest (GitHub-hosted), so unlike the
+        # self-hosted ingest workflows it cannot just `cp` into
+        # VPS_DATA_DIR directly - it has to go over the network. scp
+        # straight into <name>.new-<run_id> *inside* VPS_DATA_DIR (not /tmp)
+        # so the final `mv` on the remote side is a same-filesystem rename
+        # (atomic for any reader with the old file already open), matching
+        # the publish pattern used by the self-hosted workflows.
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+
+          SUFFIX="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          SCP="scp -i $HOME/.ssh/merge_embeddings_key -o UserKnownHostsFile=$HOME/.ssh/merge_embeddings_known_hosts -P $VPS_SSH_PORT"
+          SSH="ssh -i $HOME/.ssh/merge_embeddings_key -o UserKnownHostsFile=$HOME/.ssh/merge_embeddings_known_hosts -p $VPS_SSH_PORT"
+
+          $SCP warehouse.duckdb "$VPS_USER@$VPS_HOST:$VPS_DATA_DIR/warehouse.duckdb.new-$SUFFIX"
+          $SCP embeddings.duckdb "$VPS_USER@$VPS_HOST:$VPS_DATA_DIR/embeddings.duckdb.new-$SUFFIX"
+
+          $SSH "$VPS_USER@$VPS_HOST" bash -s -- "$VPS_DATA_DIR" "$SUFFIX" <<'EOF'
+          set -euo pipefail
+          DATA_DIR="$1"
+          SUFFIX="$2"
+          mv -f "$DATA_DIR/warehouse.duckdb.new-$SUFFIX" "$DATA_DIR/warehouse.duckdb"
+          mv -f "$DATA_DIR/embeddings.duckdb.new-$SUFFIX" "$DATA_DIR/embeddings.duckdb"
           EOF
+
+      - name: Clean up local SSH files
+        if: always()
+        run: |
+          if command -v shred >/dev/null 2>&1; then
+            shred -u "$HOME/.ssh/merge_embeddings_key" 2>/dev/null || rm -f "$HOME/.ssh/merge_embeddings_key"
+          else
+            rm -f "$HOME/.ssh/merge_embeddings_key"
+          fi
+          rm -f "$HOME/.ssh/merge_embeddings_known_hosts"
 
       - name: Upload final embedding artifacts
         uses: actions/upload-artifact@v4

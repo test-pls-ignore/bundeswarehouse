@@ -85,6 +85,25 @@ def setup_db(path: str) -> duckdb.DuckDBPyConnection:
     return con
 
 
+def build_hnsw_index(con: duckdb.DuckDBPyConnection) -> None:
+    """Create the drucksache_chunks HNSW index on an on-disk embeddings.duckdb.
+
+    DuckDB only allows a *persisted* HNSW index once this experimental-
+    persistence flag is set for the session; otherwise CREATE INDEX raises
+    "HNSW indexes can only be created in in-memory databases, or when ...
+    'hnsw_enable_experimental_persistence' is set to true." Both callers
+    (the plain extraction run and the shard-merge path) share this one
+    function specifically so that pragma can't go missing from just one of
+    them again.
+    """
+    con.execute("SET hnsw_enable_experimental_persistence = true")
+    con.execute("""
+        CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
+        ON drucksache_chunks USING HNSW (embedding)
+        WITH (metric = 'cosine')
+    """)
+
+
 def validate_embeddings_db(path: str) -> None:
     con: duckdb.DuckDBPyConnection | None = None
     try:
@@ -439,11 +458,7 @@ async def run(
             )
     if build_index:
         logger.info("Extraction done. Building HNSW index...")
-        con.execute("""
-            CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
-            ON drucksache_chunks USING HNSW (embedding)
-            WITH (metric = 'cosine')
-        """)
+        build_hnsw_index(con)
         logger.info("Index built. Total: ok=%d failed=%d", total_ok, total_failed)
     else:
         logger.info("Extraction done without building HNSW index. Total: ok=%d failed=%d", total_ok, total_failed)
@@ -566,12 +581,7 @@ def merge_shard_parquets(
             return
 
         logger.info("Building HNSW index over %d merged shards...", len(chunks_files))
-        con.execute("SET hnsw_enable_experimental_persistence = true")
-        con.execute("""
-            CREATE INDEX IF NOT EXISTS drucksache_chunks_emb_idx
-            ON drucksache_chunks USING HNSW (embedding)
-            WITH (metric = 'cosine')
-        """)
+        build_hnsw_index(con)
         logger.info("Index built for merged embeddings database.")
     finally:
         con.close()

@@ -7,14 +7,43 @@ import duckdb
 
 from analytics.extract import (
     _migrate_extraction_log,
+    build_hnsw_index,
     build_partition_plan,
     export_shard_parquet,
     filter_pending_docs,
     get_pending,
     main,
     merge_shard_parquets,
+    setup_db,
     validate_embeddings_db,
 )
+
+
+class TestBuildHnswIndex(unittest.TestCase):
+    def test_creates_persisted_index_on_disk_file(self):
+        # Regression test: DuckDB refuses to create a persisted HNSW index
+        # on an on-disk (non-:memory:) database unless
+        # hnsw_enable_experimental_persistence is set first, raising
+        # "HNSW indexes can only be created in in-memory databases, or
+        # when ... is set to true." A real on-disk path is required here -
+        # :memory: would silently not exercise this restriction at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "embeddings.duckdb")
+            con = setup_db(path)
+            con.execute(
+                "INSERT INTO drucksache_chunks VALUES ('a_0', 'a', 0, 'hello', ?)",
+                [[0.1] * 384],
+            )
+            build_hnsw_index(con)  # must not raise
+            con.close()
+
+            # The index must actually survive being reopened, not just the
+            # original in-process connection.
+            reopened = duckdb.connect(path, read_only=True)
+            reopened.execute("LOAD vss")
+            rows = reopened.execute("SELECT chunk_id FROM drucksache_chunks").fetchall()
+            reopened.close()
+            self.assertEqual(rows, [("a_0",)])
 
 
 class TestAnalyticsExtractMigrations(unittest.TestCase):

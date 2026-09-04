@@ -134,3 +134,13 @@ nicht die DIP-`person.id` — ein Mapping-Schritt folgt in Phase 2).
   40-Stunden-Laufs landete dadurch nur im 14-Tage-GitHub-Actions-Artifact,
   nie produktiv nutzbar. Seit 2026-08-27 published dieser Schritt stattdessen
   per SSH/SCP nach `~/bundeswarehouse/`, analog zu `web_deploy.yml`.
+- Die von `merge_embeddings.yml` published `embeddings.duckdb` hatte nie
+  einen HNSW-Index (`--skip-index` im Merge-Schritt). `incremental_ingest.yml`
+  war dadurch die erste Stelle, die je einen vollen Index über alle ~20.770
+  Dokumente aufbauen wollte — auf dem VPS, der sich RAM mit MinIO/rag/mcp/
+  Webapp teilt. Der Prozess wurde vom OOM-Killer gekillt (SIGKILL, kein
+  Python-Traceback). Seit 2026-09-04 baut `merge_embeddings.yml` den Index
+  selbst (GitHub-gehosteter, exklusiver Runner), und `MEMORY_MAX` (existierte
+  vorher nur als toter Env-Var-Text) wird jetzt tatsächlich an
+  `SET memory_limit` durchgereicht — in `incremental_ingest.yml` auf `3000M`
+  gesetzt als Sicherheitsnetz.

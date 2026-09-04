@@ -70,11 +70,19 @@ jobs:
           merge-multiple: true
 
       - name: Merge partition databases
+        # Build the HNSW index here (GitHub-hosted, ephemeral, no
+        # co-located services competing for RAM) rather than skipping it -
+        # otherwise the file published to the VPS never has an index, and
+        # the *next* consumer that opens it (incremental_ingest.yml, on the
+        # shared, resource-constrained VPS) ends up being the one that
+        # first attempts a full index build over the entire accumulated
+        # dataset, which OOM-killed that job in practice. Once this file
+        # already carries the index, later incremental runs only need to
+        # extend it for the handful of new/changed rows, which is cheap.
         run: |
           .venv/bin/python -m analytics.extract \
             --embeddings embeddings.duckdb \
-            --merge-dir shards \
-            --skip-index
+            --merge-dir shards
 
       - name: Configure SSH access
         env:

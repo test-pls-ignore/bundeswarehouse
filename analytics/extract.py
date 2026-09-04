@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -59,6 +60,16 @@ def _migrate_extraction_log(con: duckdb.DuckDBPyConnection) -> None:
 
 def setup_db(path: str) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(path)
+    # Without a cap, HNSW index construction over the full drucksache_chunks
+    # table can grow until the OS OOM-killer intervenes (SIGKILL, no
+    # catchable exception) - which also risks taking down co-located
+    # services (MinIO/rag/mcp) on a shared box. Setting this makes DuckDB
+    # spill to disk / raise a normal OutOfMemoryException instead.
+    # MEMORY_MAX was already defined as a workflow env var but never
+    # actually wired to DuckDB anywhere - this is that wiring.
+    memory_max = os.environ.get("MEMORY_MAX")
+    if memory_max:
+        con.execute(f"SET memory_limit='{memory_max}'")
     con.execute("INSTALL vss; LOAD vss")
     con.execute("""
         CREATE TABLE IF NOT EXISTS drucksache_chunks (

@@ -17,6 +17,13 @@ jobs:
       S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
       BUNDESTAG_API_KEY: ${{ secrets.BUNDESTAG_API_KEY }}
+      # This job runs on the VPS alongside MinIO/rag/mcp/the web app, unlike
+      # merge_embeddings.yml's dedicated GitHub-hosted runner - kept well
+      # below the box's 8GB so a runaway DuckDB operation (e.g. an
+      # unexpectedly large HNSW rebuild) hits a catchable DuckDB
+      # OutOfMemoryException instead of the OS OOM-killer taking down
+      # co-located services.
+      MEMORY_MAX: "3000M"
 
     steps:
       - name: Checkout repository

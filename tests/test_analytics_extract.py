@@ -19,6 +19,51 @@ from analytics.extract import (
 )
 
 
+def _memory_limit_mib(con) -> float:
+    """Read back DuckDB's effective memory_limit as a MiB float.
+
+    DuckDB's `M` suffix means decimal megabytes, and duckdb_settings()
+    reports the effective limit back converted to binary units (e.g. '777M'
+    becomes '741.0 MiB', while DuckDB's own system-RAM-based default comes
+    back as something like '12.5 GiB') - so tests must parse+compare
+    numerically instead of asserting an exact round-tripped string.
+    """
+    value = con.execute(
+        "SELECT value FROM duckdb_settings() WHERE name = 'memory_limit'"
+    ).fetchone()[0]
+    number, unit = value.rsplit(" ", 1)
+    scale = {"MiB": 1, "GiB": 2**10, "KiB": 2**-10}
+    assert unit in scale, f"unexpected memory_limit unit: {value!r}"
+    return float(number) * scale[unit]
+
+
+class TestSetupDbMemoryLimit(unittest.TestCase):
+    def test_applies_memory_max_env_var_when_set(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            "os.environ", {"MEMORY_MAX": "777M"}
+        ):
+            con = setup_db(str(Path(tmp) / "embeddings.duckdb"))
+            try:
+                # 777 decimal MB ~= 741 MiB; allow a little slack instead of
+                # hardcoding DuckDB's exact rounding.
+                self.assertAlmostEqual(_memory_limit_mib(con), 777 * 1_000_000 / 2**20, delta=1)
+            finally:
+                con.close()
+
+    def test_no_memory_max_env_var_leaves_default(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=False):
+            import os as _os
+            _os.environ.pop("MEMORY_MAX", None)
+            con = setup_db(str(Path(tmp) / "embeddings.duckdb"))
+            try:
+                # Must not raise; default DuckDB memory_limit stays whatever
+                # DuckDB itself picked (a large fraction of system RAM), not
+                # the value the other test explicitly sets.
+                self.assertNotAlmostEqual(_memory_limit_mib(con), 777 * 1_000_000 / 2**20, delta=1)
+            finally:
+                con.close()
+
+
 class TestBuildHnswIndex(unittest.TestCase):
     def test_creates_persisted_index_on_disk_file(self):
         # Regression test: DuckDB refuses to create a persisted HNSW index

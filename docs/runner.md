@@ -65,6 +65,37 @@ sudo systemctl status actions.runner.test-pls-ignore-bundeswarehouse.vps-runner
 
 The runner will now start automatically on boot.
 
+### Auto-restart on crash (recommended)
+
+By default `svc.sh install` does **not** set a restart policy, so if the
+runner process ever dies unexpectedly (e.g. it or a job it's running gets
+OOM-killed by the kernel — this happened in production on 2026-09-04 and
+left every subsequent workflow run stuck "waiting for a runner" for
+several days before anyone noticed), the service just stays `failed`
+until someone manually restarts it. Add a drop-in override so it comes
+back on its own instead:
+
+```bash
+sudo systemctl edit actions.runner.test-pls-ignore-bundeswarehouse.vps-runner
+```
+
+Add between the marker comments:
+
+```ini
+[Service]
+Restart=on-failure
+RestartSec=30
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart actions.runner.test-pls-ignore-bundeswarehouse.vps-runner
+```
+
+A drop-in lives at `/etc/systemd/system/<unit>.d/override.conf`, separate
+from the unit file `svc.sh` generates, so it survives reinstalling or
+reconfiguring the runner in place.
+
 ---
 
 ## 6. Required GitHub Actions secrets

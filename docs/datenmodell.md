@@ -134,6 +134,17 @@ nicht die DIP-`person.id` — ein Mapping-Schritt folgt in Phase 2).
   40-Stunden-Laufs landete dadurch nur im 14-Tage-GitHub-Actions-Artifact,
   nie produktiv nutzbar. Seit 2026-08-27 published dieser Schritt stattdessen
   per SSH/SCP nach `~/bundeswarehouse/`, analog zu `web_deploy.yml`.
+- `full_ingest.yml`s `embed-partitions`-Job (bis zu ~100+ Matrix-Partitionen,
+  sequenziell auf dem einen Self-Hosted-Runner) hat bei jedem Partitions-Job
+  das komplette `.venv` neu gebaut (venv erstellen, PyTorch, `requirements.txt`)
+  — vermutlich der Löwenanteil der beobachteten ~1,5 Tage Laufzeit für
+  `embed-partitions` allein. Seit 2026-09-08 wird das venv einmalig an einem
+  von `actions/checkout` unberührten festen Pfad (`/home/christian/bw-ci-venv`)
+  gebaut und über Hash-Vergleich von `requirements.txt` wiederverwendet
+  (`flock`-abgesichert). Der einmalige Bau passiert im `full-ingest`-Job
+  (läuft vor `embed-partitions`), alle Partitionsjobs danach finden ihn fertig
+  vor. **Gilt erst für den nächsten Lauf** — ein bereits laufender Job nutzt
+  noch den alten Code.
 - Die von `merge_embeddings.yml` published `embeddings.duckdb` hatte nie
   einen HNSW-Index (`--skip-index` im Merge-Schritt). `incremental_ingest.yml`
   war dadurch die erste Stelle, die je einen vollen Index über alle ~20.770

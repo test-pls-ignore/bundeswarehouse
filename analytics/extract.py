@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -356,7 +357,15 @@ async def process_batch(
     model: SentenceTransformer,
     con: duckdb.DuckDBPyConnection,
 ) -> tuple[int, int]:
+    # Timing-only instrumentation to find out which phase actually dominates
+    # process_batch's runtime (download, PDF extraction, or embedding)
+    # before optimizing any of them further - e.g. extract_text() below runs
+    # strictly sequentially in a plain for-loop, unlike the concurrent
+    # downloads, so it's a candidate, but not yet confirmed to be the
+    # bottleneck in practice.
+    t0 = time.monotonic()
     pdfs = await asyncio.gather(*[fetch_pdf(client, sem, url) for _, url, _, _ in batch])
+    t_download = time.monotonic() - t0
 
     chunk_rows: list[tuple] = []
     log_rows: list[tuple] = []
@@ -365,6 +374,7 @@ async def process_batch(
     # Only docs with successful fresh chunks should replace existing chunk rows.
     docs_to_replace: set[str] = set()
 
+    t0 = time.monotonic()
     for (doc_id, url, aktualisiert, previous_attempts), pdf_bytes in zip(batch, pdfs):
         attempts = previous_attempts + 1
         if pdf_bytes is None:
@@ -387,11 +397,20 @@ async def process_batch(
             chunk_meta.append((doc_id, i))
         docs_to_replace.add(doc_id)
         log_rows.append((doc_id, "ok", len(chunks), attempts, None, url, aktualisiert))
+    t_extract = time.monotonic() - t0
 
+    t0 = time.monotonic()
     if all_chunks:
         embeddings = model.encode(all_chunks, normalize_embeddings=True, show_progress_bar=False)
         for (doc_id, i), chunk, emb in zip(chunk_meta, all_chunks, embeddings):
             chunk_rows.append((f"{doc_id}_{i}", doc_id, i, chunk, emb.tolist()))
+    t_embed = time.monotonic() - t0
+
+    logger.info(
+        "process_batch timing: download=%.1fs extract=%.1fs embed=%.1fs "
+        "(docs=%d chunks=%d)",
+        t_download, t_extract, t_embed, len(batch), len(all_chunks),
+    )
 
     if chunk_rows:
         con.executemany(

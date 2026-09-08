@@ -86,19 +86,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python virtualenv
+      - name: Set up shared Python virtualenv (persisted across partition jobs)
+        # embed-partitions runs this ~100+ times per invocation, once per
+        # matrix partition, all sequentially on the one self-hosted runner.
+        # Rebuilding the venv + reinstalling torch/sentence-transformers
+        # from scratch every single time was the dominant cost of the
+        # ~1.5-day embed-partitions phase. Building it once at a fixed path
+        # *outside* $GITHUB_WORKSPACE (which actions/checkout wipes via
+        # `git clean -ffdx` every job) and reusing it - rebuilding only
+        # when requirements.txt actually changes - turns ~100 full installs
+        # into one real install plus near-instant reuse for every job
+        # after it. flock serializes this in case jobs ever race on it
+        # (e.g. if max_parallel is raised with more runners later).
+        env:
+          VENV_DIR: /home/christian/bw-ci-venv
         run: |
-          python3 --version
-          python3 -m venv .venv
-          .venv/bin/python -m ensurepip --upgrade
-          .venv/bin/python -m pip install --upgrade pip
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+          exec 9>"$VENV_DIR.lock"
+          flock 9
 
-      - name: Install PyTorch (CPU-only)
-        run: .venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install dependencies
-        run: .venv/bin/python -m pip install -r requirements.txt
+          REQ_HASH="$(sha256sum requirements.txt | cut -d' ' -f1)"
+          STAMP_FILE="$VENV_DIR/.requirements-hash"
+          if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$REQ_HASH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+            echo "Reusing existing venv at $VENV_DIR (requirements.txt unchanged)."
+          else
+            echo "Building venv at $VENV_DIR (requirements.txt changed or first run)..."
+            rm -rf "$VENV_DIR"
+            python3 -m venv "$VENV_DIR"
+            "$VENV_DIR/bin/python" -m ensurepip --upgrade
+            "$VENV_DIR/bin/python" -m pip install --upgrade pip
+            "$VENV_DIR/bin/python" -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+            "$VENV_DIR/bin/python" -m pip install -r requirements.txt
+            echo "$REQ_HASH" > "$STAMP_FILE"
+          fi
+          echo "$VENV_DIR/bin" >> "$GITHUB_PATH"
 
       - name: Validate Bundestag API key is present
         run: |
@@ -108,20 +128,20 @@ jobs:
           fi
 
       - name: Check S3 connection
-        run: .venv/bin/python -m pipeline.cli check-connection
+        run: python -m pipeline.cli check-connection
 
       - name: Run full ingest
         if: ${{ inputs.dry_run != 'true' && inputs.skip_full_load != 'true' }}
-        run: .venv/bin/python -m pipeline.cli full-load
+        run: python -m pipeline.cli full-load
 
       - name: Materialize warehouse snapshot
         if: ${{ inputs.dry_run != 'true' }}
-        run: .venv/bin/python -m pipeline.cli materialize --output warehouse.duckdb
+        run: python -m pipeline.cli materialize --output warehouse.duckdb
 
       - name: Plan pending document partitions
         if: ${{ inputs.dry_run != 'true' }}
         run: |
-          .venv/bin/python -m analytics.extract \
+          python -m analytics.extract \
             --warehouse warehouse.duckdb \
             --embeddings planner.duckdb \
             --wahlperiode "${{ inputs.wahlperiode }}" \
@@ -133,7 +153,7 @@ jobs:
         id: plan
         if: ${{ inputs.dry_run != 'true' }}
         run: |
-          .venv/bin/python - <<'PY'
+          python - <<'PY'
           import json
           import os
           from pathlib import Path
@@ -198,19 +218,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python virtualenv
+      - name: Set up shared Python virtualenv (persisted across partition jobs)
+        # embed-partitions runs this ~100+ times per invocation, once per
+        # matrix partition, all sequentially on the one self-hosted runner.
+        # Rebuilding the venv + reinstalling torch/sentence-transformers
+        # from scratch every single time was the dominant cost of the
+        # ~1.5-day embed-partitions phase. Building it once at a fixed path
+        # *outside* $GITHUB_WORKSPACE (which actions/checkout wipes via
+        # `git clean -ffdx` every job) and reusing it - rebuilding only
+        # when requirements.txt actually changes - turns ~100 full installs
+        # into one real install plus near-instant reuse for every job
+        # after it. flock serializes this in case jobs ever race on it
+        # (e.g. if max_parallel is raised with more runners later).
+        env:
+          VENV_DIR: /home/christian/bw-ci-venv
         run: |
-          python3 --version
-          python3 -m venv .venv
-          .venv/bin/python -m ensurepip --upgrade
-          .venv/bin/python -m pip install --upgrade pip
-          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+          exec 9>"$VENV_DIR.lock"
+          flock 9
 
-      - name: Install PyTorch (CPU-only)
-        run: .venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install dependencies
-        run: .venv/bin/python -m pip install -r requirements.txt
+          REQ_HASH="$(sha256sum requirements.txt | cut -d' ' -f1)"
+          STAMP_FILE="$VENV_DIR/.requirements-hash"
+          if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$REQ_HASH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+            echo "Reusing existing venv at $VENV_DIR (requirements.txt unchanged)."
+          else
+            echo "Building venv at $VENV_DIR (requirements.txt changed or first run)..."
+            rm -rf "$VENV_DIR"
+            python3 -m venv "$VENV_DIR"
+            "$VENV_DIR/bin/python" -m ensurepip --upgrade
+            "$VENV_DIR/bin/python" -m pip install --upgrade pip
+            "$VENV_DIR/bin/python" -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+            "$VENV_DIR/bin/python" -m pip install -r requirements.txt
+            echo "$REQ_HASH" > "$STAMP_FILE"
+          fi
+          echo "$VENV_DIR/bin" >> "$GITHUB_PATH"
 
       - name: Download partition plan and warehouse snapshot
         uses: actions/download-artifact@v4.1.3
@@ -219,7 +259,7 @@ jobs:
 
       - name: Build partition embeddings
         run: |
-          .venv/bin/python -m analytics.extract \
+          python -m analytics.extract \
             --warehouse warehouse.duckdb \
             --embeddings partition.duckdb \
             --wahlperiode "${{ inputs.wahlperiode }}" \
@@ -233,13 +273,13 @@ jobs:
 
       - name: Validate generated partition database
         run: |
-          .venv/bin/python -m analytics.extract \
+          python -m analytics.extract \
             --embeddings partition.duckdb \
             --validate-db
 
       - name: Export partition to Parquet
         run: |
-          .venv/bin/python -m analytics.extract \
+          python -m analytics.extract \
             --embeddings partition.duckdb \
             --export-parquet shard-artifact/ \
             --export-parquet-prefix "${{ matrix.partition.partition_id }}"

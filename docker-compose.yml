@@ -11,9 +11,13 @@ services:
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
       DUCKDB_PATH: "/data/warehouse.duckdb"
       EMBEDDINGS_PATH: "/data/embeddings.duckdb"
+      REDEN_PATH: "/data/reden.duckdb"
+      REDEN_EMBEDDINGS_PATH: "/data/reden_embeddings.duckdb"
     volumes:
       - "${PWD}/warehouse.duckdb:/data/warehouse.duckdb:ro"
       - "${PWD}/embeddings.duckdb:/data/embeddings.duckdb:ro"
+      - "${PWD}/reden.duckdb:/data/reden.duckdb:ro"
+      - "${PWD}/reden_embeddings.duckdb:/data/reden_embeddings.duckdb:ro"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -31,11 +35,15 @@ services:
     environment:
       DUCKDB_PATH: "/data/warehouse.duckdb"
       REDEN_PATH: "/data/reden.duckdb"
+      REDEN_EMBEDDINGS_PATH: "/data/reden_embeddings.duckdb"
+      EMBEDDINGS_PATH: "/data/embeddings.duckdb"
       MCP_HOST: "0.0.0.0"
       MCP_PORT: "8765"
     volumes:
       - "${PWD}/warehouse.duckdb:/data/warehouse.duckdb:ro"
       - "${PWD}/reden.duckdb:/data/reden.duckdb:ro"
+      - "${PWD}/reden_embeddings.duckdb:/data/reden_embeddings.duckdb:ro"
+      - "${PWD}/embeddings.duckdb:/data/embeddings.duckdb:ro"
     restart: unless-stopped
 
   minio:

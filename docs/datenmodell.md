@@ -16,15 +16,22 @@ DIP-API ──► raw/current/ (MinIO, NDJSON)      Rohdaten-Schicht (pipeline/)
                 ▼ analytics.materialize
         warehouse.duckdb                       Snapshot-Schicht
                 │
-                ├─► analytics.reden  ──► reden.duckdb      strukturierte Reden
-                └─► analytics.extract ─► embeddings.duckdb Volltext-Vektoren (RAG)
+                ├─► analytics.reden  ──► reden.duckdb ──► analytics.embed_reden ──► reden_embeddings.duckdb
+                │                        strukturierte Reden      Reden-Volltext-Vektoren (RAG)
+                └─► analytics.extract ─► embeddings.duckdb Drucksachen-Volltext-Vektoren (RAG)
 ```
 
 - **`warehouse.duckdb`** — materialisierter Snapshot der DIP-Ressourcen
   (`person`, `vorgang`, `drucksache`, `aktivitaet`, `plenarprotokoll`).
 - **`reden.duckdb`** — von `analytics.reden` erzeugte Faktentabelle `rede`:
   jede Rede aus den Plenarprotokoll-XMLs (WP ≥ 19), segmentiert nach Sprecher.
-- **`embeddings.duckdb`** — bestehender RAG-Index (semantische Suche als
+- **`reden_embeddings.duckdb`** — von `analytics.embed_reden` erzeugte
+  `rede_chunks`-Tabelle: Chunks + Embeddings von `rede.text` (je Rede
+  zusammengesetzt aus allen Nicht-Präsidiums-Segmenten), für semantische
+  Suche über Reden. Bewusst getrennt von `reden.duckdb`, weil
+  `reden_extract.yml` diese Datei bei jedem Lauf komplett neu erzeugt —
+  Embeddings darin würden bei jedem Lauf verloren gehen.
+- **`embeddings.duckdb`** — RAG-Index über Drucksachen (semantische Suche als
   Beleg-/Zitat-Werkzeug, nicht als Analyse-Rückgrat).
 
 ## Warum XML statt PDF?
@@ -94,13 +101,23 @@ nicht die DIP-`person.id` — ein Mapping-Schritt folgt in Phase 2).
       der Claude Code läuft, `ssh -L 8765:127.0.0.1:8765 <user>@<vps-host>`
       offen halten — danach sieht jede Claude-Code-Session in diesem Repo
       die `query_sql`/`search`-Tools automatisch.
-- [ ] End-to-End mit echten Abfragen verifizieren (Tunnel + Server oben,
-      dann z. B. „Wortanteil pro Fraktion in reden.rede" per query_sql
-      fragen) — noch nicht getestet.
+- [x] End-to-End mit echten Abfragen verifiziert (2026-09-10) — dabei zwei
+      Bugs gefunden+behoben: ein Docker-Bind-Mount-Footgun (leeres
+      Platzhalter-Verzeichnis statt Datei, siehe Betriebsnotizen unten) und
+      korrupte Stammdaten für eine wiederverwendete `redner_id` in der
+      Bundestags-eigenen XML (siehe `analytics/reden.py`s
+      `_FRAKTION_IN_LABEL_RE`-Korrektur).
 - [ ] Redner-ID-Mapping `rede.redner_id` ↔ MdB-Stammdaten
       (Open-Data-XML „Stammdaten aller Abgeordneten seit 1949")
-- [ ] Reden-Embeddings (Wiederverwendung der extract.py-Maschinerie auf
-      `rede.text` statt PDF) für thematische Filterung von Reden
+- [x] Reden-Embeddings (`analytics/embed_reden.py`, WP ≥ 19 — dieselbe
+      Grenze wie `reden.duckdb` selbst) → `reden_embeddings.duckdb`,
+      per `Embed Reden (Semantic Index)`-Workflow. `analytics/rag.py`s
+      `search`/`ask` nutzen das jetzt für Reden statt der vorherigen toten
+      `chunks`-Tabellen-Referenz auf `warehouse.duckdb` (die nirgends
+      befüllt wurde). vss-Extension wird seit dem Fix zur Build-Zeit in
+      `Dockerfile.analytics` gebacken (vorher zur Laufzeit nicht ladbar,
+      da `rag`/`mcp` nur an 127.0.0.1 gebunden sind und keinen Zugriff auf
+      extensions.duckdb.org haben).
 
 **Phase 3 — optional**
 - [ ] WP < 19 über `plenarprotokoll-text` (DIP-Volltext) mit Heuristik-Parser

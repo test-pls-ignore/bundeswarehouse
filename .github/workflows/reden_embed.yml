@@ -1,0 +1,92 @@
+name: Embed Reden (Semantic Index)
+
+on:
+  workflow_dispatch:
+    inputs:
+      wahlperiode:
+        description: "Wahlperiode to embed. Leave blank for all Wahlperioden present in reden.duckdb."
+        required: false
+        default: ""
+        type: string
+      limit:
+        description: "Max reden to process. Leave blank for a full run; enter a number for a quick smoke test."
+        required: false
+        default: ""
+        type: string
+
+jobs:
+  reden-embed:
+    runs-on: [self-hosted, vps]
+
+    env:
+      # Same rationale as incremental_ingest.yml: this runs alongside
+      # MinIO/rag/mcp/the web app on one shared VPS, so cap DuckDB's memory
+      # well below the box's total RAM.
+      MEMORY_MAX: "3000M"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python virtualenv
+        run: |
+          python3 --version
+          python3 -m venv .venv
+          .venv/bin/python3 -m ensurepip --upgrade
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install PyTorch (CPU-only)
+        run: .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: .venv/bin/pip install duckdb sentence-transformers
+
+      - name: Fetch published reden.duckdb
+        # reden_extract.yml is the source of truth for reden.duckdb; this
+        # workflow only reads it (read-only ATTACH in analytics.embed_reden)
+        # and never writes it back.
+        env:
+          DATA_DIR: /home/christian/bundeswarehouse
+        run: |
+          if [ ! -f "$DATA_DIR/reden.duckdb" ]; then
+            echo "::error::$DATA_DIR/reden.duckdb not found — run the Extract Structured Speeches (Reden) workflow first."
+            exit 1
+          fi
+          cp "$DATA_DIR/reden.duckdb" reden.duckdb
+
+      - name: Restore previous embeddings snapshot
+        # Same rationale as incremental_ingest.yml's equivalent step:
+        # actions/checkout wipes gitignored files every run, so without this
+        # rede_embed_log looks empty and every rede gets re-embedded instead
+        # of just the genuine deltas.
+        env:
+          DATA_DIR: /home/christian/bundeswarehouse
+        run: |
+          if [ -f "$DATA_DIR/reden_embeddings.duckdb" ]; then
+            cp "$DATA_DIR/reden_embeddings.duckdb" reden_embeddings.duckdb
+          fi
+
+      - name: Embed reden
+        run: |
+          python -m analytics.embed_reden \
+            --reden reden.duckdb \
+            --embeddings reden_embeddings.duckdb \
+            ${{ inputs.wahlperiode != '' && format('--wahlperiode {0}', inputs.wahlperiode) || '' }} \
+            ${{ inputs.limit != '' && format('--limit {0}', inputs.limit) || '' }}
+
+      - name: Publish data files for local services
+        # Same rationale as reden_extract.yml's equivalent step: the
+        # runner's own job workspace is not the canonical data directory
+        # that docker-compose (rag/mcp services) reads from.
+        env:
+          DATA_DIR: /home/christian/bundeswarehouse
+        run: |
+          cp reden_embeddings.duckdb "$DATA_DIR/reden_embeddings.duckdb.new"
+          mv -f "$DATA_DIR/reden_embeddings.duckdb.new" "$DATA_DIR/reden_embeddings.duckdb"
+
+      - name: Upload reden_embeddings.duckdb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: reden-embeddings-${{ github.run_id }}
+          retention-days: 14
+          path: reden_embeddings.duckdb

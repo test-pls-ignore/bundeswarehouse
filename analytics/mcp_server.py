@@ -132,12 +132,18 @@ def query_sql(sql: str) -> list[dict[str, Any]]:
 
 @mcp.tool()
 def search(question: str, wahlperiode: int | None = None, top_k: int = 8) -> list[dict[str, Any]]:
-    """Semantic search over embedded Plenarprotokoll/Drucksache chunks.
+    """Semantic search over embedded Reden (speeches) and Drucksachen chunks.
 
     Use this to find literal quotes/citations for a topic (e.g. "Was wurde
-    zur Klimapolitik gesagt?"). For aggregate or time-series questions about
-    fraktion/person behaviour, use query_sql instead — this tool ranks by
-    embedding similarity, not by structured fields.
+    zur Klimapolitik gesagt?") or a position over time (e.g. "SPD Position
+    zur Ehe für alle"). Each result includes source_type ('plenarprotokoll'
+    for a Rede, or 'drucksache'), and for Reden also speaker (redner_label)
+    and fraktion. Reden coverage is WP >= 19 only (~2017+, XML-structured
+    protocols); earlier Wahlperioden aren't indexed. For aggregate or
+    time-series questions about fraktion/person behaviour, use query_sql
+    instead — this tool ranks by embedding similarity, not by structured
+    fields, and returns only up to top_k isolated snippets, not a full
+    longitudinal picture.
 
     wahlperiode defaults to RAG_DEFAULT_WAHLPERIODE (currently 20) if not
     given. top_k caps the number of returned chunks (max 50).

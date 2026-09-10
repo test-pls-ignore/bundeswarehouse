@@ -33,6 +33,7 @@ class Source(BaseModel):
     doc_id: str
     source_type: str
     speaker: str | None
+    fraktion: str | None
     titel: str | None
     datum: str
     wahlperiode: int

@@ -88,9 +88,15 @@ nicht die DIP-`person.id` — ein Mapping-Schritt folgt in Phase 2).
       Beleg-Werkzeug). Deployment als eigener `mcp`-Service in
       docker-compose.yml, gebunden an 127.0.0.1:8765 — Zugriff nur per
       SSH-Tunnel, siehe README.
-- [ ] Auf dem VPS deployen (`docker compose up -d --build mcp`) und mit
-      einem echten MCP-Client (Claude Desktop/Code) verbinden — noch nicht
-      verifiziert.
+- [x] `.mcp.json` im Repo-Root registriert Claude Code projektweit als
+      MCP-Client für `http://127.0.0.1:8765/mcp`. Aktivierung: `docker
+      compose up -d --build mcp` auf dem VPS, dann von der Maschine, auf
+      der Claude Code läuft, `ssh -L 8765:127.0.0.1:8765 <user>@<vps-host>`
+      offen halten — danach sieht jede Claude-Code-Session in diesem Repo
+      die `query_sql`/`search`-Tools automatisch.
+- [ ] End-to-End mit echten Abfragen verifizieren (Tunnel + Server oben,
+      dann z. B. „Wortanteil pro Fraktion in reden.rede" per query_sql
+      fragen) — noch nicht getestet.
 - [ ] Redner-ID-Mapping `rede.redner_id` ↔ MdB-Stammdaten
       (Open-Data-XML „Stammdaten aller Abgeordneten seit 1949")
 - [ ] Reden-Embeddings (Wiederverwendung der extract.py-Maschinerie auf

@@ -35,6 +35,7 @@ export default function AskPage() {
                     <Link href="/" className="text-blue-600 hover:underline">← Keyword search</Link>
                     <Link href="/analytics" className="text-emerald-600 hover:underline">Analytics →</Link>
                     <Link href="/plenarprotokoll" className="text-orange-600 hover:underline">Plenarprotokoll-Browser →</Link>
+                    <Link href="/reden" className="text-pink-600 hover:underline">Reden nach Fraktion →</Link>
                 </div>
             </header>
 
@@ -107,6 +108,8 @@ function SourceCard({ index, src }: { index: number; src: Source }) {
     const accent = isPlenar ? 'text-orange-600' : 'text-purple-600'
     const badge = isPlenar ? 'bg-orange-50 text-orange-700' : 'bg-purple-50 text-purple-700'
     const label = isPlenar ? 'Plenarprotokoll' : src.titel ?? 'Drucksache'
+    // src.speaker (redner_label) already reads e.g. "Vogel (FDP):", so the
+    // separate fraktion field isn't repeated here to avoid duplication.
     const sub = isPlenar
         ? (src.speaker ? `Redner: ${src.speaker}` : undefined)
         : (src.doc_id)

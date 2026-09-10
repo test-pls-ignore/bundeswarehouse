@@ -7,6 +7,7 @@ export type Source = {
     doc_id: string
     source_type: 'plenarprotokoll' | 'drucksache'
     speaker: string | null
+    fraktion: string | null
     titel: string | null
     datum: string
     wahlperiode: number

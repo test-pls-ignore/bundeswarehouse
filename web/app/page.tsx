@@ -69,6 +69,9 @@ export default function Home() {
           <Link href="/plenarprotokoll" className="text-sm text-orange-600 hover:underline">
             Plenarprotokoll-Browser →
           </Link>
+          <Link href="/reden" className="text-sm text-pink-600 hover:underline">
+            Reden nach Fraktion →
+          </Link>
         </div>
       </header>
 

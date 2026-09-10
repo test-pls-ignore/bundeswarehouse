@@ -65,7 +65,10 @@ export default function PlenarprotokollBrowser() {
       <header className="w-full max-w-5xl mb-8">
         <div className="flex items-baseline justify-between mb-1">
           <h1 className="text-3xl font-extrabold text-gray-900">Plenarprotokolle</h1>
-          <Link href="/" className="text-sm text-blue-600 hover:underline">← Suche</Link>
+          <div className="flex gap-4">
+            <Link href="/" className="text-sm text-blue-600 hover:underline">← Suche</Link>
+            <Link href="/reden" className="text-sm text-pink-600 hover:underline">Reden nach Fraktion →</Link>
+          </div>
         </div>
         <p className="text-gray-500 text-sm">Browse all plenary session records from 1949 to present</p>
       </header>

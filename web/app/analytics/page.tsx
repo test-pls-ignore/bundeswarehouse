@@ -41,6 +41,7 @@ export default function AnalyticsPage() {
                 <div className="mt-3 flex gap-4 justify-center text-sm">
                     <Link href="/" className="text-blue-600 hover:underline">← Suche</Link>
                     <Link href="/ask" className="text-indigo-600 hover:underline">Ask →</Link>
+                    <Link href="/reden" className="text-pink-600 hover:underline">Reden nach Fraktion →</Link>
                 </div>
             </header>
 

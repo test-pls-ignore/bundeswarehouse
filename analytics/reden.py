@@ -46,6 +46,12 @@ PendingProtokoll = tuple[str, str, int, str, str, Optional[str], int]
 # (id, dokumentnummer, wahlperiode, datum, xml_url, aktualisiert, attempts)
 
 _WHITESPACE_RE = re.compile(r"\s+")
+# Bundestag's own Stammdaten sometimes carry stale/merged <fraktion> text for a
+# redner id (observed e.g. for id 11005304, whose <name> block concatenates
+# two different MdBs after one replaced the other under the same id). The
+# trailing "(FRAKTION):" in the speaker label is authored fresh per speech and
+# doesn't share that failure mode, so prefer it over the structured field.
+_FRAKTION_IN_LABEL_RE = re.compile(r"\(([^()]+)\)\s*:?\s*$")
 
 
 @dataclass
@@ -165,6 +171,10 @@ def parse_protokoll_xml(xml_bytes: bytes) -> list[RedeSegment]:
                             for part in el.itertext()
                         )
                     )
+                if label:
+                    label_fraktion = _FRAKTION_IN_LABEL_RE.search(label)
+                    if label_fraktion:
+                        info["fraktion"] = _clean(label_fraktion.group(1))
                 current = {**info, "redner_label": label, "ist_praesidium": False}
             elif tag == "name":
                 flush()

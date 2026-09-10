@@ -89,6 +89,24 @@ def test_government_member_has_rolle_instead_of_fraktion(segments):
     assert minister.rolle == "Bundesministerin BMF"
 
 
+def test_label_fraktion_overrides_merged_stammdaten():
+    # Observed live in btp/20/20091.xml: redner id 11005304's <name> block
+    # concatenates two different MdBs' data ("SPDCDU/CSU") after one replaced
+    # the other under the same id. The label text stays correct per speech.
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <dbtplenarprotokoll wahlperiode="20" sitzung-nr="91">
+      <sitzungsverlauf>
+        <rede id="ID209110200">
+          <p klasse="redner"><redner id="11005304"><name><vorname>Dirk-UlrichAlexander</vorname><nachname>Mende Föhr</nachname><fraktion>SPDCDU/CSU</fraktion></name></redner>Alexander Föhr (CDU/CSU):</p>
+          <p klasse="J_1">Vielen Dank fuer die freundliche Begruessung.</p>
+        </rede>
+      </sitzungsverlauf>
+    </dbtplenarprotokoll>
+    """
+    segs = parse_protokoll_xml(xml.encode("utf-8"))
+    assert segs[0].fraktion == "CDU/CSU"
+
+
 def test_store_and_reprocess_protokoll(tmp_path):
     con = setup_db(str(tmp_path / "reden.duckdb"))
     protokoll = ("5701", "20/214", 20, "2025-03-18", "https://example/20214.xml", "2025-03-19T00:00:00", 0)

@@ -171,10 +171,16 @@ def parse_protokoll_xml(xml_bytes: bytes) -> list[RedeSegment]:
                             for part in el.itertext()
                         )
                     )
-                if label:
-                    label_fraktion = _FRAKTION_IN_LABEL_RE.search(label)
-                    if label_fraktion:
-                        info["fraktion"] = _clean(label_fraktion.group(1))
+                if label and info["fraktion"] is not None:
+                    # Only *correct* an existing (possibly corrupted) value —
+                    # speakers who legitimately have no fraktion (government
+                    # members, Land representatives, interpreters) keep None
+                    # rather than having one invented from their label.
+                    label_match = _FRAKTION_IN_LABEL_RE.search(label)
+                    if label_match:
+                        label_fraktion = _clean(label_match.group(1))
+                        if label_fraktion and label_fraktion != info["fraktion"]:
+                            info["fraktion"] = label_fraktion
                 current = {**info, "redner_label": label, "ist_praesidium": False}
             elif tag == "name":
                 flush()

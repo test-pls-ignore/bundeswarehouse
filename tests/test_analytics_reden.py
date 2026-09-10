@@ -107,6 +107,24 @@ def test_label_fraktion_overrides_merged_stammdaten():
     assert segs[0].fraktion == "CDU/CSU"
 
 
+def test_label_fraktion_not_invented_when_structured_value_absent():
+    # A Land representative (Bundesrat) or interpreter has no <fraktion> in
+    # <name>, only a label like "Name (Hessen):". That must stay None rather
+    # than picking up "Hessen" as if it were a parliamentary fraktion.
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <dbtplenarprotokoll wahlperiode="20" sitzung-nr="91">
+      <sitzungsverlauf>
+        <rede id="ID209110300">
+          <p klasse="redner"><redner id="99999999"><name><vorname>Boris</vorname><nachname>Rhein</nachname></name></redner>Boris Rhein (Hessen):</p>
+          <p klasse="J_1">Sehr geehrte Damen und Herren.</p>
+        </rede>
+      </sitzungsverlauf>
+    </dbtplenarprotokoll>
+    """
+    segs = parse_protokoll_xml(xml.encode("utf-8"))
+    assert segs[0].fraktion is None
+
+
 def test_store_and_reprocess_protokoll(tmp_path):
     con = setup_db(str(tmp_path / "reden.duckdb"))
     protokoll = ("5701", "20/214", 20, "2025-03-18", "https://example/20214.xml", "2025-03-19T00:00:00", 0)

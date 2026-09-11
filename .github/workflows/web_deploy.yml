@@ -52,7 +52,7 @@ jobs:
             public \
             package.json \
             package-lock.json \
-            next.config.ts
+            next.config.mjs
 
       - name: Configure SSH access
         working-directory: ${{ github.workspace }}
@@ -133,7 +133,7 @@ jobs:
           import sys
           import tarfile
 
-          allowed_exact = {".next", "public", "package.json", "package-lock.json", "next.config.ts"}
+          allowed_exact = {".next", "public", "package.json", "package-lock.json", "next.config.mjs"}
           allowed_prefixes = (".next/", "public/")
 
           with tarfile.open(sys.argv[1], "r:gz") as tarball:
@@ -170,7 +170,8 @@ jobs:
 
           cp "$DEPLOY_TMP_DIR/package.json" "$WEB_APP_DIR/package.json"
           cp "$DEPLOY_TMP_DIR/package-lock.json" "$WEB_APP_DIR/package-lock.json"
-          cp "$DEPLOY_TMP_DIR/next.config.ts" "$WEB_APP_DIR/next.config.ts"
+          cp "$DEPLOY_TMP_DIR/next.config.mjs" "$WEB_APP_DIR/next.config.mjs"
+          rm -f "$WEB_APP_DIR/next.config.ts"
 
           cd "$WEB_APP_DIR"
           npm ci --omit=dev

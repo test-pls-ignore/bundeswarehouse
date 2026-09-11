@@ -53,6 +53,22 @@ jobs:
       - name: Materialize warehouse snapshot
         run: python -m pipeline.cli materialize --output warehouse.duckdb
 
+      - name: Restore previous reden.duckdb
+        # Same rationale as incremental_ingest.yml's equivalent step for
+        # embeddings.duckdb: actions/checkout wipes gitignored files every
+        # run, so without this, extracting one Wahlperiode would silently
+        # overwrite every other WP already published here (analytics.reden's
+        # setup_db/store_protokoll are additive — CREATE TABLE IF NOT EXISTS,
+        # DELETE+INSERT scoped to the protokoll_ids actually processed — so
+        # restoring first and then running a single-WP extract only adds
+        # that WP's rows, it doesn't touch the rest).
+        env:
+          DATA_DIR: /home/christian/bundeswarehouse
+        run: |
+          if [ -f "$DATA_DIR/reden.duckdb" ]; then
+            cp "$DATA_DIR/reden.duckdb" reden.duckdb
+          fi
+
       - name: Extract speeches
         run: |
           python -m analytics.reden \

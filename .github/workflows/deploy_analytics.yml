@@ -1,0 +1,47 @@
+name: Deploy Analytics Services (rag/mcp)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "analytics/**"
+      - "Dockerfile.analytics"
+      - "docker-compose.yml"
+      - "requirements.txt"
+      - ".github/workflows/deploy_analytics.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: analytics-deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, vps]
+    env:
+      DEPLOY_DIR: /home/christian/bundeswarehouse
+
+    steps:
+      - name: Sync deploy checkout to latest main
+        # /home/christian/bundeswarehouse is a separate git checkout from
+        # this runner's own job workspace (~/actions-runner/_work/...) — it's
+        # the directory docker-compose.yml's build context and bind mounts
+        # actually read from (see docker-compose.yml's `${PWD}/...` volumes).
+        # A push to main never touched it automatically before this
+        # workflow, so `docker compose build` kept rebuilding stale code —
+        # observed live 2026-09-11: a rebuild without pulling first produced
+        # the exact pre-fix traceback. `git reset --hard` (not `pull`) so a
+        # stray local edit in this deploy-only checkout can never block or
+        # silently diverge from what's on main; *.duckdb data files living
+        # here are gitignored and untouched by it.
+        run: |
+          cd "$DEPLOY_DIR"
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Rebuild and restart rag/mcp
+        run: |
+          cd "$DEPLOY_DIR"
+          docker compose build rag mcp
+          docker compose up -d --force-recreate rag mcp

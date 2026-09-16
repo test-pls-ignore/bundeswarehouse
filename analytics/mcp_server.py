@@ -154,6 +154,31 @@ def search(question: str, wahlperiode: int | None = None, top_k: int = 8) -> lis
     return retrieve_sources(question, top_k=top_k, wahlperiode=wahlperiode)
 
 
+@mcp.tool()
+def search_timeline(
+    question: str,
+    wahlperioden: list[int] | None = None,
+    top_k_per_period: int = 5,
+) -> dict[str, list[dict[str, Any]]]:
+    """Semantic search bucketed per Wahlperiode, for "position over time" questions.
+
+    Unlike `search`, which returns one flat top-k list that tends to cluster
+    around whichever Wahlperiode discussed the topic most, this runs a
+    separate top-k retrieval per Wahlperiode and returns a dict keyed by WP
+    number (as a string) to that period's sources — so every period gets a
+    fair chance to contribute evidence to a longitudinal answer. Leave
+    `wahlperioden` unset to cover every WP currently indexed. Reden
+    coverage is WP >= 19 only (~2017+); earlier Wahlperioden won't appear.
+
+    top_k_per_period caps results per period (default 5, max 50).
+    """
+    from analytics.rag import retrieve_timeline_sources
+
+    top_k_per_period = max(1, min(top_k_per_period, 50))
+    timeline = retrieve_timeline_sources(question, wahlperioden=wahlperioden, top_k_per_period=top_k_per_period)
+    return {str(wp): sources for wp, sources in timeline.items()}
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,

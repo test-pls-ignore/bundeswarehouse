@@ -33,3 +33,16 @@ export async function askRag(question: string, wahlperiode?: number): Promise<As
     }
     return res.json()
 }
+
+export async function askTimeline(question: string): Promise<AskResult> {
+    const res = await fetch(`${RAG_API_URL}/timeline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, wahlperioden: null }),
+    })
+    if (!res.ok) {
+        const detail = await res.text().catch(() => res.statusText)
+        throw new Error(`RAG API error ${res.status}: ${detail}`)
+    }
+    return res.json()
+}

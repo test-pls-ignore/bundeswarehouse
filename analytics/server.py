@@ -10,7 +10,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from analytics.rag import RetrievalError, ask, retrieve_sources
+from analytics.rag import RetrievalError, ask, ask_timeline, retrieve_sources
 
 app = FastAPI(title="bundeswarehouse RAG API")
 logger = logging.getLogger(__name__)
@@ -20,6 +20,11 @@ MAX_SEARCH_TOP_K = 50
 class AskRequest(BaseModel):
     question: str
     wahlperiode: int | None = None
+
+
+class TimelineRequest(BaseModel):
+    question: str
+    wahlperioden: list[int] | None = None
 
 
 class SearchRequest(BaseModel):
@@ -65,6 +70,18 @@ def ask_endpoint(req: AskRequest):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.exception("Unexpected error in /ask")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@app.post("/timeline", response_model=AskResponse)
+def timeline_endpoint(req: TimelineRequest):
+    try:
+        answer = ask_timeline(req.question, req.wahlperioden)
+        return {"text": answer.text, "sources": answer.sources}
+    except RetrievalError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.exception("Unexpected error in /timeline")
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
 

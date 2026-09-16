@@ -69,22 +69,11 @@ jobs:
           pattern: full-ingest-shard-*
           merge-multiple: true
 
-      - name: Merge partition databases
-        # Build the HNSW index here (GitHub-hosted, ephemeral, no
-        # co-located services competing for RAM) rather than skipping it -
-        # otherwise the file published to the VPS never has an index, and
-        # the *next* consumer that opens it (incremental_ingest.yml, on the
-        # shared, resource-constrained VPS) ends up being the one that
-        # first attempts a full index build over the entire accumulated
-        # dataset, which OOM-killed that job in practice. Once this file
-        # already carries the index, later incremental runs only need to
-        # extend it for the handful of new/changed rows, which is cheap.
-        run: |
-          .venv/bin/python -m analytics.extract \
-            --embeddings embeddings.duckdb \
-            --merge-dir shards
-
       - name: Configure SSH access
+        # Moved ahead of the merge step (was previously configured only
+        # for the publish step below) so the next two steps can fetch the
+        # currently-published embeddings.duckdb from the VPS before
+        # merging.
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
@@ -105,6 +94,63 @@ jobs:
 
           printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/merge_embeddings_known_hosts"
           chmod 644 "$HOME/.ssh/merge_embeddings_known_hosts"
+
+      - name: Fetch existing production embeddings.duckdb from VPS
+        # This run's shards only ever cover the Wahlperiode(s) that were
+        # actually (re-)indexed in this run. Without folding in whatever
+        # is already published, "Merge partition databases" below would
+        # overwrite embeddings.duckdb with only this run's WP, silently
+        # destroying every other already-indexed WP (merge_shard_parquets
+        # deletes the target file before writing - see analytics/extract.py).
+        # Tolerate no file existing yet (very first run).
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+
+          SCP="scp -i $HOME/.ssh/merge_embeddings_key -o UserKnownHostsFile=$HOME/.ssh/merge_embeddings_known_hosts -P $VPS_SSH_PORT"
+          SSH="ssh -i $HOME/.ssh/merge_embeddings_key -o UserKnownHostsFile=$HOME/.ssh/merge_embeddings_known_hosts -p $VPS_SSH_PORT"
+
+          if $SSH "$VPS_USER@$VPS_HOST" "test -f $VPS_DATA_DIR/embeddings.duckdb"; then
+            $SCP "$VPS_USER@$VPS_HOST:$VPS_DATA_DIR/embeddings.duckdb" existing_embeddings.duckdb
+            echo "existing_embeddings_found=true" >> "$GITHUB_ENV"
+          else
+            echo "No existing embeddings.duckdb on the VPS yet - nothing to preserve."
+            echo "existing_embeddings_found=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Export existing embeddings as an extra shard
+        # Reuses export_shard_parquet() (the same function that produces
+        # the partition shards this job downloads) so the previously-
+        # published rows land in the shards/ dir under a distinct prefix
+        # and get picked up by the merge glob below alongside this run's
+        # new shards, instead of being lost.
+        if: env.existing_embeddings_found == 'true'
+        run: |
+          mkdir -p shards
+          .venv/bin/python -m analytics.extract \
+            --embeddings existing_embeddings.duckdb \
+            --export-parquet shards \
+            --export-parquet-prefix existing
+
+      - name: Merge partition databases
+        # Build the HNSW index here (GitHub-hosted, ephemeral, no
+        # co-located services competing for RAM) rather than skipping it -
+        # otherwise the file published to the VPS never has an index, and
+        # the *next* consumer that opens it (incremental_ingest.yml, on the
+        # shared, resource-constrained VPS) ends up being the one that
+        # first attempts a full index build over the entire accumulated
+        # dataset, which OOM-killed that job in practice. Once this file
+        # already carries the index, later incremental runs only need to
+        # extend it for the handful of new/changed rows, which is cheap.
+        # The merge itself globs shards/*_chunks.parquet and
+        # shards/*_log.parquet (see analytics/extract.py), so it picks up
+        # both this run's new partitions and the "existing" shard above.
+        run: |
+          .venv/bin/python -m analytics.extract \
+            --embeddings embeddings.duckdb \
+            --merge-dir shards
 
       - name: Publish merged data files to the VPS
         # This job runs on ubuntu-latest (GitHub-hosted), so unlike the

@@ -2,12 +2,15 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { askRag, type AskResult, type Source } from './actions'
+import { askRag, askTimeline, type AskResult, type Source } from './actions'
+
+type Mode = number | 'timeline'
 
 export default function AskPage() {
     const [question, setQuestion] = useState('')
-    const [wahlperiode, setWahlperiode] = useState<number>(20)
+    const [mode, setMode] = useState<Mode>(20)
     const [result, setResult] = useState<AskResult | null>(null)
+    const [resultIsTimeline, setResultIsTimeline] = useState(false)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
 
@@ -18,7 +21,10 @@ export default function AskPage() {
         setError(null)
         setResult(null)
         try {
-            setResult(await askRag(question.trim(), wahlperiode))
+            const isTimeline = mode === 'timeline'
+            const res = isTimeline ? await askTimeline(question.trim()) : await askRag(question.trim(), mode)
+            setResult(res)
+            setResultIsTimeline(isTimeline)
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unknown error')
         } finally {
@@ -44,12 +50,13 @@ export default function AskPage() {
                     <label className="text-sm text-gray-500" htmlFor="ask-wahlperiode-select">Wahlperiode</label>
                     <select
                         id="ask-wahlperiode-select"
-                        value={wahlperiode}
-                        onChange={e => setWahlperiode(Number(e.target.value))}
+                        value={mode}
+                        onChange={e => setMode(e.target.value === 'timeline' ? 'timeline' : Number(e.target.value))}
                         className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700"
                     >
                         <option value={20}>WP 20</option>
                         <option value={19}>WP 19</option>
+                        <option value="timeline">Alle (Zeitverlauf)</option>
                     </select>
                 </div>
                 <div className="relative">
@@ -91,7 +98,7 @@ export default function AskPage() {
                                 Sources ({result.sources.length})
                             </h2>
                             <div className="space-y-3">
-                                {result.sources.map((src, i) => (
+                                {resultIsTimeline ? renderGroupedSources(result.sources) : result.sources.map((src, i) => (
                                     <SourceCard key={src.chunk_id} index={i + 1} src={src} />
                                 ))}
                             </div>
@@ -101,6 +108,35 @@ export default function AskPage() {
             )}
         </div>
     )
+}
+
+function renderGroupedSources(sources: Source[]) {
+    // The backend already returns sources ordered by ascending Wahlperiode
+    // with citation numbers [N] in the answer text running continuously
+    // across periods (see analytics/rag.py's ask_timeline), so grouping
+    // here just needs to insert a period heading without reordering.
+    const groups: { wahlperiode: number; sources: Source[] }[] = []
+    for (const src of sources) {
+        const last = groups[groups.length - 1]
+        if (last && last.wahlperiode === src.wahlperiode) {
+            last.sources.push(src)
+        } else {
+            groups.push({ wahlperiode: src.wahlperiode, sources: [src] })
+        }
+    }
+
+    let index = 0
+    return groups.map(group => (
+        <div key={group.wahlperiode} className="space-y-3">
+            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wide pt-2">
+                Wahlperiode {group.wahlperiode}
+            </h3>
+            {group.sources.map(src => {
+                index += 1
+                return <SourceCard key={src.chunk_id} index={index} src={src} />
+            })}
+        </div>
+    ))
 }
 
 function SourceCard({ index, src }: { index: number; src: Source }) {

@@ -164,6 +164,83 @@ def retrieve(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) 
     return results[:top_k]
 
 
+def _discover_wahlperioden() -> list[int]:
+    """List every Wahlperiode present in either the Drucksachen or Reden data.
+
+    Used as the default scope for retrieve_timeline()/ask_timeline() so
+    that backfilling more Wahlperioden (e.g. a future pre-WP19 extension)
+    automatically widens timeline coverage without any code change here.
+    """
+    wps: set[int] = set()
+
+    if Path(WAREHOUSE_PATH).exists():
+        con = duckdb.connect(WAREHOUSE_PATH, read_only=True)
+        try:
+            wps.update(
+                r[0] for r in con.execute(
+                    "SELECT DISTINCT wahlperiode FROM drucksache WHERE wahlperiode IS NOT NULL"
+                ).fetchall()
+            )
+        finally:
+            con.close()
+
+    if Path(REDEN_PATH).exists():
+        con = duckdb.connect(REDEN_PATH, read_only=True)
+        try:
+            wps.update(
+                r[0] for r in con.execute(
+                    "SELECT DISTINCT wahlperiode FROM rede WHERE wahlperiode IS NOT NULL"
+                ).fetchall()
+            )
+        finally:
+            con.close()
+
+    return sorted(wps)
+
+
+def retrieve_timeline(
+    question: str,
+    wahlperioden: list[int] | None = None,
+    top_k_per_period: int = 5,
+) -> dict[int, list[dict]]:
+    """Retrieve chunks bucketed per Wahlperiode instead of one flat top-K.
+
+    A single flat retrieve() over all WPs returns whichever chunks score
+    highest overall, which tends to cluster around whichever period
+    discussed the topic most - not an even sample across time. This buckets
+    retrieval per WP so a "how did X change over time" synthesis has
+    material from every period, not just the loudest one.
+    """
+    if wahlperioden is None:
+        wahlperioden = _discover_wahlperioden()
+    if not wahlperioden:
+        return {}
+
+    model = _get_model()
+    q_vec = model.encode([question], normalize_embeddings=True)[0].tolist()
+
+    timeline: dict[int, list[dict]] = {}
+    for wp in wahlperioden:
+        chunks = (
+            _retrieve_reden(q_vec, top_k_per_period, wp)
+            + _retrieve_drucksachen(q_vec, top_k_per_period, wp)
+        )
+        chunks.sort(key=lambda r: r["score"], reverse=True)
+        chunks = chunks[:top_k_per_period]
+        if chunks:
+            timeline[wp] = chunks
+    return timeline
+
+
+def retrieve_timeline_sources(
+    question: str,
+    wahlperioden: list[int] | None = None,
+    top_k_per_period: int = 5,
+) -> dict[int, list[dict]]:
+    timeline = retrieve_timeline(question, wahlperioden=wahlperioden, top_k_per_period=top_k_per_period)
+    return {wp: _sources_from_chunks(chunks) for wp, chunks in timeline.items()}
+
+
 def retrieve_sources(question: str, top_k: int = TOP_K, wahlperiode: int | None = None) -> list[dict]:
     chunks = retrieve(question, top_k=top_k, wahlperiode=wahlperiode)
     return _sources_from_chunks(chunks)
@@ -206,6 +283,33 @@ def _format_context(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def _format_timeline_context(timeline: dict[int, list[dict]]) -> str:
+    """Like _format_context, but grouped under a Wahlperiode header per period.
+
+    Citation numbers [N] run continuously across the whole flattened set (in
+    WP order) so they line up 1:1 with the flattened `sources` list
+    ask_timeline() returns.
+    """
+    sections = []
+    index = 1
+    for wp in sorted(timeline):
+        numbered = []
+        for c in timeline[wp]:
+            if c["source_type"] == "plenarprotokoll":
+                header = f"[{index}] Plenarprotokoll {c['doc_id']} vom {c['datum']}"
+                if c.get("speaker"):
+                    header += f"\nRedner: {c['speaker']}"
+            else:
+                header = (
+                    f"[{index}] {c.get('drucksachetyp', 'Drucksache')} {c['doc_id']}"
+                    f" — {c.get('titel', '')} vom {c['datum']}"
+                )
+            numbered.append(f"{header}\n{c['text'][:800]}")
+            index += 1
+        sections.append(f"=== Wahlperiode {wp} ===\n\n" + "\n\n---\n\n".join(numbered))
+    return "\n\n".join(sections)
+
+
 def ask(question: str, wahlperiode: int | None = None) -> Answer:
     import anthropic
 
@@ -231,6 +335,51 @@ def ask(question: str, wahlperiode: int | None = None) -> Answer:
     )
 
     sources = _sources_from_chunks(chunks)
+
+    return Answer(text=message.content[0].text, sources=sources)
+
+
+def ask_timeline(
+    question: str,
+    wahlperioden: list[int] | None = None,
+    top_k_per_period: int = 5,
+) -> Answer:
+    """Answer a "how did X change over time" question with per-period retrieval.
+
+    Unlike ask(), which does one flat top-K search, this buckets retrieval
+    per Wahlperiode (retrieve_timeline()) so every period gets a fair chance
+    to contribute evidence, then makes a single synthesis call over all
+    periods' context asking for a chronological answer. One LLM call
+    regardless of period count keeps cost flat for the WP19-21 scope this
+    was built for; a much larger period count (e.g. a future pre-2017
+    backfill) may need a two-stage map-reduce summary instead.
+    """
+    import anthropic
+
+    timeline = retrieve_timeline(question, wahlperioden=wahlperioden, top_k_per_period=top_k_per_period)
+    if not timeline:
+        return Answer(text="Keine relevanten Quellen gefunden.")
+
+    context = _format_timeline_context(timeline)
+    periods = ", ".join(f"WP {wp}" for wp in sorted(timeline))
+
+    system = textwrap.dedent(f"""
+        Du bist ein Assistent für parlamentarische Recherche. Die Auszüge unten sind nach
+        Wahlperiode gruppiert ({periods}), chronologisch aufsteigend. Beantworte die Frage,
+        indem du die zeitliche Entwicklung über die Wahlperioden hinweg beschreibst — nicht nur
+        eine einzelne Momentaufnahme. Zitiere die Quellen mit [N]. Falls die Auszüge keine
+        ausreichende Grundlage für eine Entwicklung über Zeit bieten, sage das klar.
+    """).strip()
+
+    client = anthropic.Anthropic()
+    message = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=1536,
+        system=system,
+        messages=[{"role": "user", "content": f"Auszüge nach Wahlperiode:\n\n{context}\n\nFrage: {question}"}],
+    )
+
+    sources = [source for wp in sorted(timeline) for source in _sources_from_chunks(timeline[wp])]
 
     return Answer(text=message.content[0].text, sources=sources)
 
